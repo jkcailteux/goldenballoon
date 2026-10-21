@@ -135,6 +135,20 @@ It holds up to **128** nodes, and node ids must be unique. Battle and banana
 challenge AI and walking characters (TT, Taj) use it. **Normal races don't
 steer by AI nodes; they use checkpoints.**
 
+Byte 0x08 (`unk8`) is the node's **role** for the battle AI. The roles are
+used by `racer_ai_challenge` ([`racer.c`](../../game/src/racer.c)) and
+`func_8001CD28` (`objects.c`), and Icicle Pyramid uses them like this:
+
+| `unk8` | Role |
+|---|---|
+| 0 | Ordinary waypoint. |
+| 1 | A weapon balloon sits here. CPU racers with no weapon path to these nodes, so put the balloon on the node, about 16 units off the ground. |
+| 3 | Recovery point. A racer knocked onto another height band heads for the nearest of these on its new band. With none on that band it **coasts forever**, so every level of an arena needs one. |
+| 4 + racer | Home node for that racer in the banana challenge. |
+
+A CPU racer only fires at a target on the same height band (`elevation`,
+0-3), within 800 units, and roughly in front of it.
+
 ### Pickups and boosts
 
 | Object | BHV | Body | Notes |

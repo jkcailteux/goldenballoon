@@ -208,7 +208,7 @@ At draw time:
 | Segments | 128 | `LEVEL_SEGMENT_MAX`, `tracks.c:64` |
 | Textures per model | 255 (0xFF means none) | [`platform/custom_track_model.h:9`](../../platform/custom_track_model.h#L9) |
 | Per batch | 32 vertices, 16 triangles | `validate_draw_batches` |
-| Collision candidates at once | 500 | [`game/src/hasm/collision.h:7`](../../game/src/hasm/collision.h#L7) |
+| Collision candidates at once | 500 | [`game/src/collision.h:7`](../../game/src/collision.h#L7) |
 | Wave grid | below 32 columns × 64 rows | `custom_track_model.c:129` |
 | Per-segment counts | ≤ 0x7FFF | `custom_track_model.c:172` |
 

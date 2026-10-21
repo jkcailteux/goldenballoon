@@ -43,6 +43,52 @@ them up. Pass `--no-custom-tracks` to leave them out.
 personal deployment, ideally behind Vercel deployment protection, and never
 for a public site.
 
+## Brand-new tracks from scripts
+
+Two generators build original geometry and objects, textured with the game's
+own textures by id. The packages they write contain no ROM bytes.
+
+- **`tools/custom_tracks/make_track.py`** builds a race track from a layout
+  file such as [`layouts/canyon-loop.json`](../tools/custom_tracks/layouts/canyon-loop.json):
+  - **Track:** a closed spline of control points, turned into a road with
+    grass verges, walls, an invisible barrier above the walls, and decorative
+    slopes beyond them.
+  - **Objects:** a start grid, a checkpoint loop that follows the road (which
+    also gives the AI its racing line), item balloons, bananas and zip pads.
+  - **Safety check:** it refuses a layout whose road would overlap itself.
+- **`tools/custom_tracks/make_fossil_pyramid.py`** builds **Fossil Pyramid**,
+  a Dino Domain battle arena modelled on Icicle Pyramid:
+  - **Arena:** a walled sand floor, a two-tier temple pyramid with railed
+    ramps, and a lava moat and volcano cliffs outside.
+  - **Dressing and AI:** palms, bushes, torches, weapon balloons, and an AI
+    node graph tagged the way the battle AI expects.
+
+```bash
+blender -b --factory-startup --python tools/custom_tracks/make_track.py -- \
+    --track-lab ~/src/DKR-R/tools/blender --assets ~/dkr-assets \
+    --layout tools/custom_tracks/layouts/canyon-loop.json --out custom-tracks
+blender -b --factory-startup --python tools/custom_tracks/make_fossil_pyramid.py -- \
+    --track-lab ~/src/DKR-R/tools/blender --assets ~/dkr-assets --out custom-tracks
+```
+
+Lessons both scripts encode:
+- **Collision is one-sided.** Floors must face up and walls must face the
+  side karts drive on, or karts pass straight through them.
+- **Battle AI needs tagged nodes.** Weapon balloons must sit on AI nodes
+  tagged 1, and every height level needs a recovery node tagged 3 (see
+  [object-maps.md](levels/object-maps.md#ainode-bhv-16-battle-and-npc-paths)).
+  Without them, CPU racers never arm themselves or never recover from a fall.
+- **Copy the battle AI percentages.** Track Lab has no field for them (header
+  0x2A-0x33), so the arena script copies Icicle Pyramid's values into place.
+- **Battles work from an ordinary race column.** A custom battle arena is
+  listed like any track, and the game itself switches to a 4-racer battle
+  because of its race type (64).
+
+To test a new track, race it headless with the AI driving
+(`MDKR_LOAD_TRACK`, `MDKR_AUTOPILOT=1`). `MDKR_AI_STUCK_TRACE=<ticks>` prints
+every CPU racer's position, speed and checkpoint at that interval, which is
+the quickest way to find a spot where they wedge or a lap that doesn't count.
+
 ## Making a remix from the command line
 
 With Blender 4.2+ and a checkout of DKR-R:
