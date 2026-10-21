@@ -1249,3 +1249,68 @@ kbd {
   .quality { grid-template-columns: 1fr; gap: 6px; }
   .quality-advanced-grid { grid-template-columns: 1fr; gap: 6px; }
 }
+
+/* ===== Launcher: Play first ==============================================
+   The launcher's one job is to get you racing. A compact header replaces the
+   full-width banner, the Play card comes first, and everything else folds.
+   #rom-ui gets .rom-ready (mdkr64-shell.js, "Launcher layout") while Play is
+   usable: then Play shows and the drop zone gives way to "Use a different ROM".
+   Before that, Play stays hidden instead of sitting there disabled. */
+.topbar {
+  display: flex; align-items: center; justify-content: center; gap: 16px;
+  flex-wrap: wrap;
+  background: linear-gradient(180deg, #114fe1 0%, #4a95f2 70%, var(--sky) 100%);
+  padding: 10px max(16px, env(safe-area-inset-right)) 10px max(16px, env(safe-area-inset-left));
+}
+.topbar-logo {
+  display: block; height: clamp(56px, 10vw, 96px); width: auto;
+  mask-image: linear-gradient(90deg, transparent 0, #000 6%, #000 94%, transparent 100%);
+  -webkit-mask-image: linear-gradient(90deg, transparent 0, #000 6%, #000 94%, transparent 100%);
+}
+.topbar-tag {
+  margin: 0; color: #062048; font-weight: 700; font-size: 14px;
+}
+
+.play-card { text-align: center; }
+.play-card .play-actions { justify-content: center; margin-top: 0; }
+.btn-play { font-size: 22px; padding: 16px 44px; min-width: min(320px, 100%); }
+#play:disabled { display: none; }
+.play-hint { margin: 10px 0 0; font-size: 13px; color: var(--ink-dim); }
+#rom-ui:not(.rom-ready) .play-hint,
+#rom-ui:not(.rom-ready) .play-actions { display: none; }
+#rom-ui.rom-ready .rom-picker { display: none; }
+#rom-ui:not(.rom-ready) #rom-change { display: none; }
+#rom-ui.rom-ready #rom-status:empty { display: none; }
+.rom-picker .privacy { margin-top: 12px; }
+
+.rom-manage {
+  display: flex; gap: 18px; justify-content: center; flex-wrap: wrap;
+  margin-top: 14px;
+}
+.text-button {
+  background: none; border: 0; padding: 4px 2px; cursor: pointer;
+  color: var(--gold); font: inherit; font-size: 14px; text-decoration: underline;
+}
+.text-button:hover { color: #ffd76a; }
+
+.fold {
+  margin-top: 14px;
+  background: linear-gradient(180deg, rgba(13, 43, 82, .82), rgba(9, 30, 58, .78));
+  border: 1px solid var(--line); border-left: 4px solid var(--gold-deep);
+  box-shadow: var(--glass-edge);
+}
+.fold > summary {
+  list-style: none; cursor: pointer;
+  display: flex; align-items: center; gap: 10px;
+  padding: 14px var(--grid);
+}
+.fold > summary::-webkit-details-marker { display: none; }
+.fold > summary::before {
+  content: "▸"; color: var(--gold); font-size: 14px;
+  transition: transform .15s var(--ease-out);
+}
+.fold[open] > summary::before { transform: rotate(90deg); }
+.fold > summary h2 { margin: 0; font-size: 17px; }
+.fold > :not(summary) { margin-left: var(--grid); margin-right: var(--grid); }
+.fold > :last-child { margin-bottom: var(--grid); }
+.fold .intro-links { justify-content: flex-start; }

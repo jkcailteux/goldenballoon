@@ -2693,3 +2693,49 @@ function registerServiceWorker() {
   }
   console.error("[shell] startup failed:", error);
 });
+
+// ---- Launcher layout: Play first --------------------------------------------
+// index.html hides Play until it is usable. While it is, #rom-ui carries
+// .rom-ready, which swaps the drop zone for "Use a different ROM", and Play
+// takes focus so Enter starts it. A gamepad's A or Start does the same: the
+// launcher is often reached from the couch with a controller already in hand.
+(() => {
+  const ui = $("rom-ui");
+  const play = $("play");
+  if (!ui || !play) return;
+  const launcherVisible = () => !$("gate").hidden && !ui.hidden &&
+    !document.querySelector("dialog[open]");
+  const sync = () => {
+    const ready = !play.disabled;
+    const wasReady = ui.classList.contains("rom-ready");
+    ui.classList.toggle("rom-ready", ready);
+    if (ready && !wasReady && launcherVisible()) play.focus({preventScroll: true});
+  };
+  new MutationObserver(sync).observe(play, {attributes: true, attributeFilter: ["disabled"]});
+  new MutationObserver(sync).observe(ui, {attributes: true, attributeFilter: ["hidden"]});
+  sync();
+  $("rom-change")?.addEventListener("click", () => $("rom-input")?.click());
+
+  // Edge-triggered so a button already held when the launcher appears (the one
+  // that just quit a race, say) never starts the next one by itself.
+  const held = new Set();
+  let armed = false;
+  const poll = () => {
+    const pads = navigator.getGamepads ? [...navigator.getGamepads()] : [];
+    for (const pad of pads) {
+      if (!pad) continue;
+      for (const index of [0, 9]) { /* standard mapping: A, Start */
+        const key = pad.index + ":" + index;
+        const pressed = !!pad.buttons[index]?.pressed;
+        if (pressed && !held.has(key) && armed && !play.disabled && launcherVisible()) {
+          play.click();
+        }
+        if (pressed) held.add(key); else held.delete(key);
+      }
+    }
+    armed = launcherVisible();
+    requestAnimationFrame(poll);
+  };
+  addEventListener("gamepadconnected", () => requestAnimationFrame(poll), {once: true});
+  if (navigator.getGamepads && [...navigator.getGamepads()].some(Boolean)) requestAnimationFrame(poll);
+})();

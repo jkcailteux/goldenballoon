@@ -37,35 +37,16 @@
 <!-- ================= LAUNCHER ================= -->
 <main id="gate" tabindex="-1">
 
-  <!-- Start/finish gantry across the top edge, then the banner artwork at its own
-       aspect (never cropped) on the sky gradient sampled from the art itself. -->
-  <div class="gantry" aria-hidden="true"></div>
-
-  <div class="banner">
-    <img src="assets/hero.jpg" alt="Golden Balloon" width="1600" height="533"
+  <!-- Compact header: the launcher's job is to get you racing, so the artwork
+       stays small and everything that is not the Play card folds away below. -->
+  <header class="topbar">
+    <img class="topbar-logo" src="assets/hero.jpg" alt="Golden Balloon" width="1600" height="533"
          fetchpriority="high">
-  </div>
+    <p class="topbar-tag">Native in your browser &middot; bring your own ROM</p>
+  </header>
+  <div class="gantry" aria-hidden="true"></div>
 
   <h1 class="sr-only">Golden Balloon</h1>
-
-  <div class="intro">
-    <p class="lede">
-      A native source port of the 1997&nbsp;N64 kart racer — the game compiled
-      for your CPU, drawn through <strong>WebGPU</strong>, running entirely in
-      this tab. Not an emulator.
-    </p>
-    <ul class="badges">
-      <li>No install</li>
-      <li>No server</li>
-      <li>No game data shipped</li>
-    </ul>
-    <p class="intro-links">
-      <a href="https://github.com/akratch/goldenballoon/releases/latest">Desktop downloads — macOS · Windows · Linux</a>
-      <a href="https://github.com/akratch/goldenballoon">Source code</a>
-    </p>
-  </div>
-
-  <div class="gantry" aria-hidden="true"></div>
 
   <div class="page">
     <div class="wrap">
@@ -80,11 +61,27 @@
       <!-- Revealed once the WebGPU capability gate passes. -->
       <div id="rom-ui" tabindex="-1" hidden>
 
-        <section class="sect" aria-labelledby="picker-title">
-          <div class="pos" aria-hidden="true">01</div>
-          <div class="panel">
-            <h2 id="picker-title">Bring your own ROM</h2>
+        <section class="play-card panel" aria-labelledby="picker-title">
+          <h2 id="picker-title" class="sr-only">Play</h2>
 
+          <!-- Shown only while Play is usable (see launcher layout in mdkr64-shell.js). -->
+          <div class="actions play-actions">
+            <button id="play" class="btn btn-primary btn-play" type="button" disabled>
+              <span>▶ Play</span>
+            </button>
+            <!-- LOCAL_ONLY_CLOUD_START: launcher-actions -->
+            <button id="online-room-open" class="btn btn-ghost" type="button" hidden>
+              Online room
+            </button>
+            <button id="add-phone-controllers" class="btn btn-ghost" type="button"
+                    disabled hidden>Add phone controllers</button>
+            <!-- LOCAL_ONLY_CLOUD_END: launcher-actions -->
+          </div>
+          <p class="play-hint">Press <kbd>Enter</kbd> or <kbd>A</kbd> on a controller to start.</p>
+
+          <p id="rom-status" role="status" aria-live="polite" tabindex="-1"></p>
+
+          <div class="rom-picker">
             <button id="drop" class="drop" type="button">
               <svg class="drop-icon" viewBox="0 0 24 24" aria-hidden="true">
                 <path d="M12 16V4m0 0L8 8m4-4 4 4M4 16v2a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-2"
@@ -97,222 +94,199 @@
               </span>
             </button>
             <input type="file" id="rom-input" accept=".z64,.n64,.v64" hidden>
-
-            <p id="rom-status" role="status" aria-live="polite" tabindex="-1"></p>
-
-            <div class="quality">
-              <label class="quality-label" for="mode">Presentation</label>
-              <select id="mode" class="quality-select">
-                <option value="restored" selected>Restored &mdash; recommended, original look with modern fidelity</option>
-                <option value="remastered">Remastered &mdash; art-directed effects (work in progress)</option>
-                <option value="pure">Pure &mdash; original 4:3, no enhancements</option>
-              </select>
-              <p class="quality-note"><strong>Qualified browser path:</strong>
-                WebGPU with Restored presentation. Remastered is opt-in work in
-                progress and is not visually qualified until its remaining gates close.</p>
-              <label class="quality-label" for="scale">Supersampling</label>
-              <select id="scale" class="quality-select">
-                <option value="">Mode default (2&times;)</option>
-                <option value="1">Off (1&times;) &mdash; reference</option>
-                <option value="2">2&times;</option>
-                <option value="3">3&times;</option>
-                <option value="4">4&times; &mdash; sharpest, heaviest</option>
-              </select>
-              <details id="experimental-presentation" class="quality-advanced">
-                <summary>Advanced / experimental motion</summary>
-                <div class="quality-advanced-grid">
-                  <label class="quality-label" for="rate">Frame rate</label>
-                  <select id="rate" class="quality-select">
-                    <option value="original" selected>Original &mdash; authored motion</option>
-                    <option value="display">Match display</option>
-                    <option value="30">30 Hz</option>
-                    <option value="60">60 Hz</option>
-                    <option value="90">90 Hz</option>
-                    <option value="120">120 Hz</option>
-                    <option value="144">144 Hz</option>
-                  </select>
-                  <label class="quality-label" for="smoothing">Motion smoothing</label>
-                  <select id="smoothing" class="quality-select">
-                    <option value="off" selected>Off &mdash; authored images only</option>
-                    <option value="interpolate">Interpolated &mdash; smooth modern motion</option>
-                  </select>
-                  <p id="frame-rate-status" class="quality-note">A frame rate above
-                    Original creates additional presentation opportunities. <strong>Interpolated</strong>
-                    motion smoothing fills them with unique images blended from adjacent authored
-                    game states; Off holds the latest authored image. Motion smoothing never
-                    changes physics, AI, input, timers, audio, or saves; fresh configurations
-                    use the original fixed gameplay cadence.
-                    Browser presentation cannot exceed the display's
-                    <code>requestAnimationFrame</code> cadence.</p>
-                </div>
-              </details>
-              <p class="quality-note">Supersampling renders above your window size and
-                filters back down, which is what removes the stair-stepping on edges.
-                Restored and Remastered use 2&times;. <strong>Set it to Off and back to
-                4&times; while watching the balloons and palm trees</strong> &mdash; that
-                is the difference. It costs fill rate, so drop back if performance
-                suffers.</p>
-            </div>
-
-            <div class="actions">
-              <button id="play" class="btn btn-primary" type="button" disabled>
-                <span>▶ Play here</span>
-              </button>
-              <!-- LOCAL_ONLY_CLOUD_START: launcher-actions -->
-              <button id="online-room-open" class="btn btn-ghost" type="button" hidden>
-                Online room
-              </button>
-              <button id="add-phone-controllers" class="btn btn-ghost" type="button"
-                      disabled hidden>Add phone controllers</button>
-              <!-- LOCAL_ONLY_CLOUD_END: launcher-actions -->
-              <button id="forget" class="btn btn-ghost" type="button" hidden>Forget stored ROM</button>
-            </div>
-            <p class="fine">Play here supports solo, ordinary split-screen,
-              keyboard, touch controls and mixed gamepads.</p>
-
-            <p class="fine">
-              Other revisions (US 1.0, EU 1.0, Japan) are recognised and named back to
-              you, but not supported yet — this build is compiled for the 1.1 data and
-              nothing bounds-checks an index into a section that shrank.
-            </p>
-
             <p class="privacy">
-              Your ROM is read <strong>locally, in this browser</strong>. It is never
-              uploaded — there is no server here to receive it. No game data is
-              distributed with this page; you supply your own copy.
+              Your ROM is read <strong>locally, in this browser</strong> and kept in
+              this browser's storage for next time. It is never uploaded.
             </p>
           </div>
-        </section>
 
-        <section class="sect" aria-labelledby="play-title">
-          <div class="pos" aria-hidden="true">02</div>
-          <div>
-            <h2 id="play-title" class="sr-only">How to play</h2>
-            <div class="cols">
-              <div class="panel">
-                <h3>Controls</h3>
-                <dl class="keys">
-                  <dt><kbd>←</kbd><kbd>→</kbd> <span class="alt">/ <kbd>A</kbd><kbd>D</kbd></span></dt>
-                    <dd>Steer</dd>
-                  <dt><kbd>↑</kbd><kbd>↓</kbd> <span class="alt">/ <kbd>W</kbd><kbd>S</kbd></span></dt>
-                    <dd>Menus · plane pitch</dd>
-                  <dt><kbd>X</kbd></dt><dd><strong>Accelerate</strong> (A)</dd>
-                  <dt><kbd>Z</kbd></dt><dd>Brake / reverse (B)</dd>
-                  <dt><kbd>Space</kbd></dt><dd><strong>Hop / power-slide</strong> (R)</dd>
-                  <dt><kbd>Shift</kbd></dt><dd>Fire item (Z)</dd>
-                  <dt><kbd>Q</kbd></dt><dd>L</dd>
-                  <dt><kbd>I</kbd><kbd>J</kbd><kbd>K</kbd><kbd>L</kbd></dt><dd>C-buttons · rear view</dd>
-                  <dt><kbd>Enter</kbd></dt><dd>Start / pause</dd>
-                  <dt><kbd>F</kbd></dt><dd>Fullscreen</dd>
-                </dl>
-                <p class="tip">
-                  <strong>Space is worth learning.</strong> Tapping hop into a corner
-                  power-slides, which is how you actually go fast in this game.
-                </p>
-                <p class="fine">
-                  A gamepad is genuinely better here — keyboard steering is digital
-                  (full lock or nothing) where the original is analog. Plug one in
-                  and press a button; it is picked up automatically.
-                </p>
-                <p class="fine">
-                  On a phone or tablet, analog touch controls appear automatically
-                  when play starts. They respect screen cutouts, support simultaneous
-                  steering and action buttons, and can be hidden from the in-game
-                  <strong>Controls</strong> button.
-                </p>
-              </div>
-
-              <div class="panel">
-                <h3>Good to know</h3>
-                <ul class="notes">
-                  <li><strong>Saves persist</strong> in your browser, so lap records
-                    survive a reload. <em>Stored data</em> (step&nbsp;04) erases
-                    them if you want a clean slate.</li>
-                  <li>Needs <strong>WebGPU</strong>. Current Chrome or Edge is the
-                    qualified path; a WebGPU-enabled Firefox or Safari can also
-                    work. Every browser is capability-detected and receives an
-                    explicit failure instead of a black screen; there is no
-                    WebGL fallback.</li>
-                  <li><strong>Adventure, Tracks, Time Trial, bosses, trophy series,
-                    and challenge modes</strong> are playable.</li>
-                  <li>Two-, three-, and four-player split-screen work with
-                    additional controllers.</li>
-                  <li>The mouse is not used in-game; play with a keyboard, gamepad,
-                    or the automatic phone/tablet touch controls.</li>
-                </ul>
-              </div>
-            </div>
+          <div class="rom-manage">
+            <button id="rom-change" class="text-button" type="button">Use a different ROM</button>
+            <button id="forget" class="text-button" type="button" hidden>Forget stored ROM</button>
           </div>
         </section>
 
-        <section class="sect" aria-labelledby="known-title">
-          <div class="pos" aria-hidden="true">03</div>
-          <div class="panel">
-            <h2 id="known-title">Known issues</h2>
-            <ul class="notes">
-              <li><strong>Controller Pak backup uses mdkr64's versioned
-                <code>.mdkr-paks</code> bundle.</strong> Import of raw emulator
-                <code>.mpk</code> images is not available yet.</li>
-              <li><strong>Rumble support depends on the browser and controller.</strong>
-                Devices without a Web Gamepad vibration actuator play normally
-                without feedback.</li>
-              <li><strong>Video Options</strong> are available from the in-game
-                Options menu. Aspect, FOV, and supersampling apply immediately;
-                cache-wide presentation changes clearly request a restart.</li>
-              <li>Found something? A browser console trace is genuinely useful —
-                the wasm offsets in it map straight back to function names.
-                <a href="https://github.com/akratch/golden-balloon/issues">Open an
-                issue</a>.</li>
-            </ul>
+        <details class="fold">
+          <summary><h2>Graphics settings</h2></summary>
+          <div class="quality">
+            <label class="quality-label" for="mode">Presentation</label>
+            <select id="mode" class="quality-select">
+              <option value="restored" selected>Restored &mdash; recommended, original look with modern fidelity</option>
+              <option value="remastered">Remastered &mdash; art-directed effects (work in progress)</option>
+              <option value="pure">Pure &mdash; original 4:3, no enhancements</option>
+            </select>
+            <p class="quality-note"><strong>Qualified browser path:</strong>
+              WebGPU with Restored presentation. Remastered is opt-in work in
+              progress and is not visually qualified until its remaining gates close.</p>
+            <label class="quality-label" for="scale">Supersampling</label>
+            <select id="scale" class="quality-select">
+              <option value="">Mode default (2&times;)</option>
+              <option value="1">Off (1&times;) &mdash; reference</option>
+              <option value="2">2&times;</option>
+              <option value="3">3&times;</option>
+              <option value="4">4&times; &mdash; sharpest, heaviest</option>
+            </select>
+            <details id="experimental-presentation" class="quality-advanced">
+              <summary>Advanced / experimental motion</summary>
+              <div class="quality-advanced-grid">
+                <label class="quality-label" for="rate">Frame rate</label>
+                <select id="rate" class="quality-select">
+                  <option value="original" selected>Original &mdash; authored motion</option>
+                  <option value="display">Match display</option>
+                  <option value="30">30 Hz</option>
+                  <option value="60">60 Hz</option>
+                  <option value="90">90 Hz</option>
+                  <option value="120">120 Hz</option>
+                  <option value="144">144 Hz</option>
+                </select>
+                <label class="quality-label" for="smoothing">Motion smoothing</label>
+                <select id="smoothing" class="quality-select">
+                  <option value="off" selected>Off &mdash; authored images only</option>
+                  <option value="interpolate">Interpolated &mdash; smooth modern motion</option>
+                </select>
+                <p id="frame-rate-status" class="quality-note">A frame rate above
+                  Original creates additional presentation opportunities. <strong>Interpolated</strong>
+                  motion smoothing fills them with unique images blended from adjacent authored
+                  game states; Off holds the latest authored image. Motion smoothing never
+                  changes physics, AI, input, timers, audio, or saves; fresh configurations
+                  use the original fixed gameplay cadence.
+                  Browser presentation cannot exceed the display's
+                  <code>requestAnimationFrame</code> cadence.</p>
+              </div>
+            </details>
+            <p class="quality-note">Supersampling renders above your window size and
+              filters back down, which removes stair-stepping on edges. Restored and
+              Remastered use 2&times;. It costs fill rate, so drop back if performance
+              suffers.</p>
           </div>
-        </section>
+        </details>
+
+        <details class="fold">
+          <summary><h2>Controls</h2></summary>
+          <dl class="keys">
+            <dt><kbd>←</kbd><kbd>→</kbd> <span class="alt">/ <kbd>A</kbd><kbd>D</kbd></span></dt>
+              <dd>Steer</dd>
+            <dt><kbd>↑</kbd><kbd>↓</kbd> <span class="alt">/ <kbd>W</kbd><kbd>S</kbd></span></dt>
+              <dd>Menus · plane pitch</dd>
+            <dt><kbd>X</kbd></dt><dd><strong>Accelerate</strong> (A)</dd>
+            <dt><kbd>Z</kbd></dt><dd>Brake / reverse (B)</dd>
+            <dt><kbd>Space</kbd></dt><dd><strong>Hop / power-slide</strong> (R)</dd>
+            <dt><kbd>Shift</kbd></dt><dd>Fire item (Z)</dd>
+            <dt><kbd>Q</kbd></dt><dd>L</dd>
+            <dt><kbd>I</kbd><kbd>J</kbd><kbd>K</kbd><kbd>L</kbd></dt><dd>C-buttons · rear view</dd>
+            <dt><kbd>Enter</kbd></dt><dd>Start / pause</dd>
+            <dt><kbd>F</kbd></dt><dd>Fullscreen</dd>
+          </dl>
+          <p class="tip">
+            <strong>Space is worth learning.</strong> Tapping hop into a corner
+            power-slides, which is how you actually go fast in this game.
+          </p>
+          <p class="fine">
+            A gamepad is better here — keyboard steering is digital (full lock or
+            nothing) where the original is analog. Plug one in and press a button;
+            it is picked up automatically. On a phone or tablet, analog touch
+            controls appear when play starts and can be hidden from the in-game
+            <strong>Controls</strong> button.
+          </p>
+        </details>
+
+        <details class="fold">
+          <summary><h2>Good to know</h2></summary>
+          <ul class="notes">
+            <li><strong>Saves persist</strong> in your browser, so lap records
+              survive a reload. <em>Stored data</em> below erases them if you want
+              a clean slate.</li>
+            <li>Needs <strong>WebGPU</strong>. Current Chrome or Edge is the
+              qualified path; a WebGPU-enabled Firefox or Safari can also work.
+              There is no WebGL fallback.</li>
+            <li><strong>Adventure, Tracks, Time Trial, bosses, trophy series,
+              and challenge modes</strong> are playable.</li>
+            <li>Two-, three-, and four-player split-screen work with additional
+              controllers.</li>
+            <li>The mouse is not used in-game; play with a keyboard, gamepad,
+              or the automatic phone/tablet touch controls.</li>
+            <li>Play here supports solo, ordinary split-screen, keyboard, touch
+              controls and mixed gamepads.</li>
+            <li>Other revisions (US 1.0, EU 1.0, Japan) are recognised and named
+              back to you, but not supported yet — this build is compiled for the
+              1.1 data.</li>
+          </ul>
+        </details>
+
+        <details class="fold">
+          <summary><h2>Known issues</h2></summary>
+          <ul class="notes">
+            <li><strong>Controller Pak backup uses mdkr64's versioned
+              <code>.mdkr-paks</code> bundle.</strong> Import of raw emulator
+              <code>.mpk</code> images is not available yet.</li>
+            <li><strong>Rumble support depends on the browser and controller.</strong>
+              Devices without a Web Gamepad vibration actuator play normally
+              without feedback.</li>
+            <li><strong>Video Options</strong> are available from the in-game
+              Options menu. Aspect, FOV, and supersampling apply immediately;
+              cache-wide presentation changes clearly request a restart.</li>
+            <li>Found something? A browser console trace is genuinely useful —
+              the wasm offsets in it map straight back to function names.</li>
+          </ul>
+        </details>
 
         <!-- Stored data. Its own section, away from the ROM picker, because this
              is the recovery path: if a stored save ever makes the game misbehave
              on boot, wiping it here is the way out. The shell talks to IndexedDB
              directly so this still works when the engine does not. -->
-        <section class="sect" aria-labelledby="data-title">
-          <div class="pos" aria-hidden="true">04</div>
-          <div class="panel">
-            <h2 id="data-title">Stored data</h2>
-            <p class="fine">
-              Browser storage can be cleared by browser settings, private mode,
-              storage eviction, or a site reset. Download a backup if the
-              progress matters to you. Save files and ROMs stay on this device
-              and are never uploaded.
-            </p>
-            <div class="actions">
-              <button id="download-save" class="btn btn-primary" type="button">
-                <span>Download backup</span>
-              </button>
-              <button id="download-save-raw" class="btn btn-ghost" type="button">Download raw EEPROM</button>
-              <button id="download-paks" class="btn btn-ghost" type="button">Download ghost Paks</button>
-              <button id="import-paks-button" class="btn btn-ghost" type="button">Import ghost Paks</button>
-              <input id="import-paks-input" type="file"
-                     accept=".mdkr-paks,application/json"
-                     hidden>
-              <button id="import-save-button" class="btn btn-ghost" type="button">Import backup</button>
-              <input id="import-save-input" type="file"
-                     accept=".mdkr-save,.eep,.bin,.sav,application/json"
-                     hidden>
-              <button id="edit-save" class="btn btn-ghost" type="button">Edit saved progress</button>
-              <button id="restore-save-snapshot" class="btn btn-ghost" type="button">Recovery points</button>
-              <button id="clear-save" class="btn btn-danger" type="button">Erase saved progress</button>
-            </div>
-            <button id="save-drop" class="save-drop" type="button">
-              Drop a <code>.mdkr-save</code> backup or exact 512-byte EEPROM here
+        <details class="fold">
+          <summary><h2 id="data-title">Stored data</h2></summary>
+          <p class="fine">
+            Browser storage can be cleared by browser settings, private mode,
+            storage eviction, or a site reset. Download a backup if the
+            progress matters to you. Save files and ROMs stay on this device
+            and are never uploaded.
+          </p>
+          <div class="actions">
+            <button id="download-save" class="btn btn-primary" type="button">
+              <span>Download backup</span>
             </button>
-            <p id="save-status" role="status" aria-live="polite"></p>
-            <p class="fine">
-              Adventure progress and Controller Pak ghosts are stored
-              separately; use both backup buttons if both matter. Import and
-              editing use a rollback transaction: the candidate is
-              staged, persisted, reloaded, and checked byte-for-byte before it
-              becomes live. The game also retains three checksum-safe automatic
-              snapshots. Corrupt blocks are never repaired silently.
-            </p>
+            <button id="download-save-raw" class="btn btn-ghost" type="button">Download raw EEPROM</button>
+            <button id="download-paks" class="btn btn-ghost" type="button">Download ghost Paks</button>
+            <button id="import-paks-button" class="btn btn-ghost" type="button">Import ghost Paks</button>
+            <input id="import-paks-input" type="file"
+                   accept=".mdkr-paks,application/json"
+                   hidden>
+            <button id="import-save-button" class="btn btn-ghost" type="button">Import backup</button>
+            <input id="import-save-input" type="file"
+                   accept=".mdkr-save,.eep,.bin,.sav,application/json"
+                   hidden>
+            <button id="edit-save" class="btn btn-ghost" type="button">Edit saved progress</button>
+            <button id="restore-save-snapshot" class="btn btn-ghost" type="button">Recovery points</button>
+            <button id="clear-save" class="btn btn-danger" type="button">Erase saved progress</button>
           </div>
-        </section>
+          <button id="save-drop" class="save-drop" type="button">
+            Drop a <code>.mdkr-save</code> backup or exact 512-byte EEPROM here
+          </button>
+          <p id="save-status" role="status" aria-live="polite"></p>
+          <p class="fine">
+            Adventure progress and Controller Pak ghosts are stored
+            separately; use both backup buttons if both matter. Import and
+            editing use a rollback transaction: the candidate is
+            staged, persisted, reloaded, and checked byte-for-byte before it
+            becomes live. The game also retains three checksum-safe automatic
+            snapshots. Corrupt blocks are never repaired silently.
+          </p>
+        </details>
+
+        <details class="fold">
+          <summary><h2>About Golden Balloon</h2></summary>
+          <p class="fine">
+            A native source port of the 1997&nbsp;N64 kart racer — the game
+            compiled for your CPU, drawn through <strong>WebGPU</strong>, running
+            entirely in this tab. Not an emulator. No install, no server, no game
+            data shipped.
+          </p>
+          <p class="intro-links">
+            <a href="https://github.com/akratch/goldenballoon/releases/latest">Desktop downloads — macOS · Windows · Linux</a>
+            <a href="https://github.com/akratch/goldenballoon">Source code</a>
+          </p>
+        </details>
 
         <hr class="rule" aria-hidden="true">
 
