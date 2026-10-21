@@ -46,6 +46,10 @@ tools/check_no_rom.sh "$STAGE"
 
 if [[ ! -f "$STAGE/.vercel/project.json" ]]; then
     vercel link --cwd "$STAGE" --project "${VERCEL_PROJECT:-goldenballoon}" --yes
+    # Linking from inside this checkout connects the project to the GitHub
+    # remote, and every push would then deploy the repository root (which has
+    # no web build) over production. This script is the only deploy path.
+    vercel git disconnect --cwd "$STAGE" --yes >/dev/null 2>&1 || true
 fi
 
 if [[ "$PROD" -eq 1 ]]; then
