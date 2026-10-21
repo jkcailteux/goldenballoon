@@ -3,14 +3,24 @@
     blender -b --factory-startup --python tools/custom_tracks/make_fossil_pyramid.py -- \
         --track-lab ~/src/DKR-R/tools/blender --assets ~/dkr-assets --out custom-tracks
 
-A walled sand arena with a two-tier temple pyramid in the middle, ramps up
-each tier, a lava moat and volcano cliffs beyond the walls, Dino Domain
-scenery, missile balloons on every level and an AI node graph so the CPU
-racers chase you up the pyramid. Original geometry, textured with retail
-textures by id (no ROM bytes of its own); Track Lab does the model layout and
-the object-map and header encoding.
+A wide walled sand arena:
+- a two-tier temple pyramid in the middle (ramps up to tier 1 from the east
+  and west, up to the summit from the north and south);
+- four raised orange-stone mesas in the corners, each with its own ramp;
+- a lava moat outside the walls and low volcanic hills beyond, so the view
+  stays open;
+- palms, bushes and torches;
+- weapon balloons on every level, and an AI node graph tagged the way the
+  battle AI expects (balloon nodes, recovery nodes).
 
-Coordinates are Blender's (z up), in map units; Track Lab converts them.
+Every ramp runs straight into the tier it climbs, so travel round each ring
+is never blocked. Rails and walls are solid blocks with caps, so no edge is a
+single paper-thin face.
+
+Geometry is original and textured with retail textures by id (no ROM bytes of
+its own). Each face's texture is recorded as it is built and matched back
+after Track Lab converts the mesh. Coordinates are Blender's (z up), in map
+units.
 """
 import argparse
 import math
@@ -21,40 +31,49 @@ import tempfile
 import bmesh
 import bpy
 from mathutils import Vector
+from mathutils.kdtree import KDTree
 
-ARENA = 2800      # half-width of the walled floor
-WALL = 450        # visible arena wall height
-CELL = 400        # floor/tier tiling (keeps faces small for UVs and segments)
-T1, T1_Z = 1200, 250   # tier 1 half-width and top height
-T2, T2_Z = 800, 500    # tier 2 (top platform)
-MOAT_OUT, MOAT_Z = 3600, 150
-CLIFF_OUT, CLIFF_Z = 4600, 1700
+ARENA = 4400            # half-width of the walled floor
+WALL, WALL_T = 380, 120 # arena wall height and thickness
+CELL = 400
+T1, T1_Z = 2000, 300    # tier 1 half-width and height
+T2, T2_Z = 800, 600     # tier 2 (summit)
+MESA, MESA_Z, MESA_AT = 500, 300, 3300   # corner mesas: half-width, height, centre offset
+RAIL, RAIL_T = 110, 50
+MOAT_IN, MOAT_OUT, MOAT_Z = ARENA + WALL_T, 5600, -160
+HILLS_OUT, HILLS_Z = 8400, 1100
 
 TEXTURES = {
     "floor": 26,          # Sand
-    "tracks": 142,        # Sand Dry (Dinosaur Tracks, 966, is a see-through decal: alone it reads as lava)
+    "dry": 142,           # Sand Dry
     "bones": 809,         # Fossil Bone
     "tier": 174,          # Temple Brick Tile
     "summit": 252,        # Temple Stone Dino
     "temple_wall": 172,   # Temple Brick
     "ramp": 34,           # Yellow Stone
+    "mesa": 168,          # Orange Stone
+    "mesa_wall": 188,     # Orange Stone Wall Hillside
     "arena_wall": 68,     # Mossy Rock
     "lava": 16,           # Lava (animated)
-    "cliff": 202,         # Volcano Wall
+    "hills": 202,         # Volcano Wall
 }
+DECORATION = {"lava", "hills"}
 
-RAIL = 120        # low rails on ramp sides and tier edges
-# Ramps: (x0, x1, y_low, y_high, z_low, z_high, landing). A ramp rises from
-# y_low towards y_high and is level for its last `landing` units, so the step
-# across onto the platform beside it is flush.
+# Ramps: (axis, centre, half_width, start, end, z_start, z_end). The ramp runs
+# along `axis` from `start` (low) to `end` (high), centred on `centre` across.
 RAMPS = [
-    (-200, 200, 2100, T1, 0, T1_Z, 0),         # floor -> tier 1, north face
-    (-200, 200, -2100, -T1, 0, T1_Z, 0),       # floor -> tier 1, south face
-    (T2, T1, -600, 400, T1_Z, T2_Z, 200),      # tier 1 -> top, along the east side
-    (-T1, -T2, 600, -400, T1_Z, T2_Z, 200),    # tier 1 -> top, along the west side
+    ("x", 0, 300, 3150, T1, 0, T1_Z),          # floor -> tier 1, east
+    ("x", 0, 300, -3150, -T1, 0, T1_Z),        # floor -> tier 1, west
+    ("y", 0, 300, 1750, T2, T1_Z, T2_Z),       # tier 1 -> summit, north
+    ("y", 0, 300, -1750, -T2, T1_Z, T2_Z),     # tier 1 -> summit, south
 ]
-# Battle AI percentages (header 0x2A..0x33), as Icicle Pyramid has them: how
-# often a CPU racer goes for balloons, chases, and attacks.
+for _sx in (1, -1):
+    for _sy in (1, -1):
+        # Each mesa's ramp climbs towards it from the pyramid side, along y.
+        RAMPS.append(("y", _sx * MESA_AT, 220, _sy * (MESA_AT - MESA - 900), _sy * (MESA_AT - MESA),
+                      0, MESA_Z))
+
+# Battle AI percentages (header 0x2A..0x33), as Icicle Pyramid has them.
 AI_PERCENTAGES = [85, 90, 85, 100, 100, 20, 100, 0, 0, 0]
 
 
@@ -72,16 +91,19 @@ def arguments():
 # ---- Geometry ----------------------------------------------------------------
 
 class Builder:
+    """Collects faces with a texture band each, so bands survive conversion."""
+
     def __init__(self):
         self.bm = bmesh.new()
         self.mesh = bpy.data.meshes.new("arena_source")
         self.slots = {}
         self.verts = {}
+        self.bands = []   # (triangle centroid, normal, band) for both splits of every face
 
     def material(self, category):
         if category not in self.slots:
             material = bpy.data.materials.new(category)
-            if category in ("decoration", "invisible walls"):
+            if category != "solid":
                 material["dkr_category"] = category
             self.mesh.materials.append(material)
             self.slots[category] = len(self.mesh.materials) - 1
@@ -93,101 +115,154 @@ class Builder:
             self.verts[key] = self.bm.verts.new(key)
         return self.verts[key]
 
-    def quad(self, corners, facing, category="solid"):
-        """A face whose normal points along `facing` (collision is one-sided)."""
+    def face(self, corners, facing, band):
+        """`facing` sets the side collision and drawing use (both are one-sided)."""
         verts = []
-        for corner in corners:  # a ramp's lowest side piece collapses to a triangle
+        for corner in corners:
             vert = self.vert(*corner)
             if vert not in verts:
                 verts.append(vert)
         if len(verts) < 3:
-            return None
-        face = self.bm.faces.new(verts)
+            return
+        try:
+            face = self.bm.faces.new(verts)
+        except ValueError:  # the same face built twice (shared seams)
+            return
         face.normal_update()
         if face.normal.dot(Vector(facing)) < 0:
             face.normal_flip()
+        category = "solid"
+        if band in DECORATION:
+            category = "decoration"
+        elif band == "barrier":
+            category = "invisible walls"
         face.material_index = self.material(category)
-        return face
+        points = [v.co.copy() for v in face.verts]
+        normal = face.normal.copy()
+        for tri in ((0, 1, 2), (0, 2, 3), (0, 1, 3), (1, 2, 3)):
+            if max(tri) < len(points):
+                self.bands.append((sum((points[k] for k in tri), Vector()) / 3, normal, band))
 
-    def floor_grid(self, x0, x1, y0, y1, z, skip=None):
-        x = x0
-        while x < x1:
-            y = y0
-            while y < y1:
-                if not (skip and skip(x + CELL / 2, y + CELL / 2)):
-                    self.quad([(x, y, z), (x + CELL, y, z), (x + CELL, y + CELL, z), (x, y + CELL, z)],
-                              (0, 0, 1))
-                y += CELL
-            x += CELL
+    def grid(self, x0, x1, y0, y1, z, band_of, skip=None):
+        for x in range(x0, x1, CELL):
+            for y in range(y0, y1, CELL):
+                xe, ye = min(x + CELL, x1), min(y + CELL, y1)
+                cx, cy = (x + xe) / 2, (y + ye) / 2
+                if skip and skip(cx, cy):
+                    continue
+                self.face([(x, y, z), (xe, y, z), (xe, ye, z), (x, ye, z)], (0, 0, 1), band_of(cx, cy))
 
-    def box_walls(self, half, z0, z1, facing_out, category="solid", step=CELL):
-        sign = 1 if facing_out else -1
-        for a in range(-half, half, step):
-            b = a + step
-            self.quad([(a, half, z0), (b, half, z0), (b, half, z1), (a, half, z1)], (0, sign, 0), category)
-            self.quad([(a, -half, z0), (b, -half, z0), (b, -half, z1), (a, -half, z1)], (0, -sign, 0), category)
-            self.quad([(half, a, z0), (half, b, z0), (half, b, z1), (half, a, z1)], (sign, 0, 0), category)
-            self.quad([(-half, a, z0), (-half, b, z0), (-half, b, z1), (-half, a, z1)], (-sign, 0, 0), category)
+    def box_sides(self, half_x, half_y, cx, cy, z0, z1, band, facing_out=True, step=CELL, openings=()):
+        """Vertical walls round a rectangle, facing out (or in), left open
+        across `openings`: (axis, side, lo, hi), as for rails. A ramp arrives
+        through an opening; a wall behind it would catch karts at its top edge."""
+        s = 1 if facing_out else -1
+        for axis in ("x", "y"):
+            for sign in (1, -1):
+                span = half_y if axis == "x" else half_x
+                pieces = [(-span, span)]
+                for g_axis, g_side, lo, hi in openings:
+                    if g_axis == axis and g_side == sign:
+                        cut = []
+                        for a, b in pieces:
+                            if lo > a:
+                                cut.append((a, min(b, lo)))
+                            if hi < b:
+                                cut.append((max(a, hi), b))
+                        pieces = cut
+                for a0, b0 in pieces:
+                    a = a0
+                    while a < b0:
+                        b = min(a + step, b0)
+                        if axis == "y":   # the edge at y = cy + sign * half_y, running along x
+                            y = cy + sign * half_y
+                            corners = [(cx + a, y, z0), (cx + b, y, z0), (cx + b, y, z1), (cx + a, y, z1)]
+                            facing = (0, s * sign, 0)
+                        else:
+                            x = cx + sign * half_x
+                            corners = [(x, cy + a, z0), (x, cy + b, z0), (x, cy + b, z1), (x, cy + a, z1)]
+                            facing = (s * sign, 0, 0)
+                        self.face(corners, facing, band)
+                        a = b
 
-    def ring(self, inner, outer, z_in, z_out, category, step=CELL):
-        """A sloped band between two squares (moat and cliffs)."""
+    def block(self, x0, y0, x1, y1, z0, z1, band):
+        """A solid box: four sides and a top cap."""
+        self.face([(x0, y0, z1), (x1, y0, z1), (x1, y1, z1), (x0, y1, z1)], (0, 0, 1), band)
+        self.face([(x0, y0, z0), (x1, y0, z0), (x1, y0, z1), (x0, y0, z1)], (0, -1, 0), band)
+        self.face([(x0, y1, z0), (x1, y1, z0), (x1, y1, z1), (x0, y1, z1)], (0, 1, 0), band)
+        self.face([(x0, y0, z0), (x0, y1, z0), (x0, y1, z1), (x0, y0, z1)], (-1, 0, 0), band)
+        self.face([(x1, y0, z0), (x1, y1, z0), (x1, y1, z1), (x1, y0, z1)], (1, 0, 0), band)
+
+    def rails(self, half, cx, cy, z, gaps, step=CELL):
+        """Solid rails round a platform's rim, just inside it, except across
+        `gaps`: (axis, side, lo, hi) - the edge at axis = side * half, open
+        between lo and hi along it, where a ramp arrives."""
+        for axis in ("x", "y"):
+            for side in (1, -1):
+                pieces = [(-half, half)]
+                for g_axis, g_side, lo, hi in gaps:
+                    if g_axis == axis and g_side == side:
+                        cut = []
+                        for a, b in pieces:
+                            if lo > a:
+                                cut.append((a, min(b, lo)))
+                            if hi < b:
+                                cut.append((max(a, hi), b))
+                        pieces = cut
+                for a, b in pieces:
+                    start = a
+                    while start < b:
+                        end = min(start + step, b)
+                        rim = side * half
+                        inner = rim - side * RAIL_T
+                        if axis == "x":   # edge at x = rim, running along y
+                            x0, x1 = sorted((cx + rim, cx + inner))
+                            self.block(x0, cy + start, x1, cy + end, z, z + RAIL, "temple_wall")
+                        else:             # edge at y = rim, running along x
+                            y0, y1 = sorted((cy + rim, cy + inner))
+                            self.block(cx + start, y0, cx + end, y1, z, z + RAIL, "temple_wall")
+                        start = end
+
+    def ramp(self, axis, centre, half_width, start, end, z0, z1, pieces=4):
+        def point(along, across, z):
+            return (along, across, z) if axis == "x" else (across, along, z)
+
+        def side_facing(sign):
+            return (0, sign, 0) if axis == "x" else (sign, 0, 0)
+
+        edges = (centre - half_width, centre + half_width)
+        for k in range(pieces):
+            a = start + (end - start) * k / pieces
+            b = start + (end - start) * (k + 1) / pieces
+            za = z0 + (z1 - z0) * k / pieces
+            zb = z0 + (z1 - z0) * (k + 1) / pieces
+            self.face([point(a, edges[0], za), point(b, edges[0], zb), point(b, edges[1], zb),
+                       point(a, edges[1], za)], (0, 0, 1), "ramp")
+            for across, sign in ((edges[0], -1), (edges[1], 1)):
+                # The ramp's side, down to the level it starts from.
+                self.face([point(a, across, z0), point(b, across, z0), point(b, across, zb),
+                           point(a, across, za)], side_facing(sign), "temple_wall")
+                # A solid rail along it, ending one piece short of the top so a
+                # racer can turn as it arrives.
+                if k == pieces - 1:
+                    continue
+                inner = across - sign * RAIL_T
+                self.face([point(a, across, za + RAIL), point(b, across, zb + RAIL),
+                           point(b, inner, zb + RAIL), point(a, inner, za + RAIL)], (0, 0, 1), "temple_wall")
+                self.face([point(a, inner, za), point(b, inner, zb), point(b, inner, zb + RAIL),
+                           point(a, inner, za + RAIL)], side_facing(-sign), "temple_wall")
+                self.face([point(a, across, za), point(b, across, zb), point(b, across, zb + RAIL),
+                           point(a, across, za + RAIL)], side_facing(sign), "temple_wall")
+
+    def ring(self, inner, outer, z_in, z_out, band, step=CELL):
         for a in range(-inner, inner, step):
-            b = a + step
+            b = min(a + step, inner)
             ao, bo = a * outer / inner, b * outer / inner
             for s in (1, -1):
-                self.quad([(a, s * inner, z_in), (b, s * inner, z_in), (bo, s * outer, z_out), (ao, s * outer, z_out)],
-                          (0, 0, 1), category)
-                self.quad([(s * inner, a, z_in), (s * inner, b, z_in), (s * outer, bo, z_out), (s * outer, ao, z_out)],
-                          (0, 0, 1), category)
-
-    def ramp(self, x0, x1, y_low, y_high, z_low, z_high, landing, pieces=4):
-        direction = 1 if y_high > y_low else -1
-        y_top = y_high - direction * landing
-        stations = [(y_low + (y_top - y_low) * k / pieces, z_low + (z_high - z_low) * k / pieces)
-                    for k in range(pieces + 1)]
-        if landing:
-            stations.append((y_high, z_high))
-        upper = z_low > 0
-        for piece, ((ya, za), (yb, zb)) in enumerate(zip(stations, stations[1:])):
-            # A floor ramp's rails stop one piece short of the tier, so a racer
-            # arriving at the top can already turn towards a corner of the tier.
-            last_floor_piece = not upper and piece == len(stations) - 2
-            self.quad([(x0, ya, za), (x1, ya, za), (x1, yb, zb), (x0, yb, zb)], (0, 0, 1))
-            for x, out in ((x0, -1), (x1, 1)):
-                # Sides, down to the level the ramp starts from...
-                self.quad([(x, ya, z_low), (x, yb, z_low), (x, yb, zb), (x, ya, za)], (out, 0, 0))
-                # ...and a rail above the surface, facing the ramp. An upper ramp
-                # runs along the top tier's wall on its inner side and is crossed
-                # onto that tier from its landing, so it is railed outside only.
-                inner = abs(x) == T2
-                if not (upper and inner) and not last_floor_piece:
-                    self.quad([(x, ya, za), (x, yb, zb), (x, yb, zb + RAIL), (x, ya, za + RAIL)], (-out, 0, 0))
-        if upper:  # an upper ramp ends in a drop: close it, and rail the landing's end
-            self.quad([(x0, y_high, z_low), (x1, y_high, z_low), (x1, y_high, z_high), (x0, y_high, z_high)],
-                      (0, direction, 0))
-            self.quad([(x0, y_high, z_high), (x1, y_high, z_high), (x1, y_high, z_high + RAIL),
-                       (x0, y_high, z_high + RAIL)], (0, -direction, 0))
-
-    def edge_rails(self, half, z, gaps):
-        """Rails round a tier's edge, facing inward, except where `gaps` says
-        (axis, side, lo, hi): a ramp arrives there."""
-        for a in range(-half, half, CELL // 4):
-            b = a + CELL // 4
-            for axis in ("x", "y"):
-                for side in (1, -1):
-                    mid = (a + b) / 2
-                    if any(g_axis == axis and g_side == side and lo <= mid <= hi
-                           for g_axis, g_side, lo, hi in gaps):
-                        continue
-                    if axis == "y":  # the edge at y = side * half, running along x
-                        corners = [(a, side * half, z), (b, side * half, z),
-                                   (b, side * half, z + RAIL), (a, side * half, z + RAIL)]
-                        facing = (0, -side, 0)
-                    else:
-                        corners = [(side * half, a, z), (side * half, b, z),
-                                   (side * half, b, z + RAIL), (side * half, a, z + RAIL)]
-                        facing = (-side, 0, 0)
-                    self.quad(corners, facing)
+                self.face([(a, s * inner, z_in), (b, s * inner, z_in), (bo, s * outer, z_out), (ao, s * outer, z_out)],
+                          (0, 0, 1), band)
+                self.face([(s * inner, a, z_in), (s * inner, b, z_in), (s * outer, bo, z_out), (s * outer, ao, z_out)],
+                          (0, 0, 1), band)
 
     def finish(self):
         self.bm.to_mesh(self.mesh)
@@ -197,100 +272,139 @@ class Builder:
         return obj
 
 
+def floor_band(x, y):
+    cell = (int(math.floor(x / CELL)), int(math.floor(y / CELL)))
+    if (cell[0] * 3 + cell[1] * 7) % 13 == 0:
+        return "bones"
+    if (cell[0] - cell[1]) % 6 == 0 or (cell[0] + cell[1]) % 9 == 0:
+        return "dry"
+    return "floor"
+
+
+def on_mesa(x, y):
+    return any(abs(x - sx * MESA_AT) < MESA and abs(y - sy * MESA_AT) < MESA
+               for sx in (1, -1) for sy in (1, -1))
+
+
 def build_arena():
     b = Builder()
-    b.floor_grid(-ARENA, ARENA, -ARENA, ARENA, 0, skip=lambda x, y: abs(x) < T1 and abs(y) < T1)
-    b.floor_grid(-T1, T1, -T1, T1, T1_Z, skip=lambda x, y: abs(x) < T2 and abs(y) < T2)
-    b.floor_grid(-T2, T2, -T2, T2, T2_Z)
-    b.box_walls(T1, 0, T1_Z, facing_out=True)
-    b.box_walls(T2, T1_Z, T2_Z, facing_out=True)
-    b.box_walls(ARENA, 0, WALL, facing_out=False)
-    b.box_walls(ARENA, WALL, WALL + 1100, facing_out=False, category="invisible walls")
+    # Floor, minus the pyramid's and the mesas' footprints.
+    b.grid(-ARENA, ARENA, -ARENA, ARENA, 0, floor_band,
+           skip=lambda x, y: (abs(x) < T1 and abs(y) < T1) or on_mesa(x, y))
+    # Pyramid.
+    b.grid(-T1, T1, -T1, T1, T1_Z, lambda x, y: "tier", skip=lambda x, y: abs(x) < T2 and abs(y) < T2)
+    b.grid(-T2, T2, -T2, T2, T2_Z, lambda x, y: "summit" if abs(x) < CELL and abs(y) < CELL else "tier")
+    b.box_sides(T1, T1, 0, 0, 0, T1_Z, "temple_wall", openings=[("x", 1, -300, 300), ("x", -1, -300, 300)])
+    b.box_sides(T2, T2, 0, 0, T1_Z, T2_Z, "temple_wall", openings=[("y", 1, -300, 300), ("y", -1, -300, 300)])
+    # Corner mesas, railed except where their ramp arrives (the pyramid side).
+    for sx in (1, -1):
+        for sy in (1, -1):
+            cx, cy = sx * MESA_AT, sy * MESA_AT
+            b.grid(cx - MESA, cx + MESA, cy - MESA, cy + MESA, MESA_Z, lambda x, y: "mesa")
+            b.box_sides(MESA, MESA, cx, cy, 0, MESA_Z, "mesa_wall", step=MESA // 2,
+                        openings=[("y", -sy, -220, 220)])
+            b.rails(MESA, cx, cy, MESA_Z, [("y", -sy, -220, 220)], step=MESA // 2)
     for ramp in RAMPS:
         b.ramp(*ramp)
-    # Tier 1: open where the floor ramps arrive (north and south, |x| <= 200)
-    # and along the east/west rings, where the upper ramps sit against the edge.
-    b.edge_rails(T1, T1_Z, [("y", 1, -450, 450), ("y", -1, -450, 450),
-                            ("x", 1, -600, 400), ("x", -1, -400, 600)])
-    # The top: open only where the upper ramps' landings meet it.
-    b.edge_rails(T2, T2_Z, [("x", 1, 200, 400), ("x", -1, -400, -200)])
-    b.ring(ARENA, MOAT_OUT, MOAT_Z, MOAT_Z, "decoration")
-    b.ring(MOAT_OUT, CLIFF_OUT, MOAT_Z, CLIFF_Z, "decoration")
-    # The arena wall's outer face, down to the lava, so the moat has a bank.
-    b.box_walls(ARENA, MOAT_Z, WALL, facing_out=True, category="decoration")
-    return b.finish()
+    # Pyramid rims, railed except where ramps arrive.
+    b.rails(T1, 0, 0, T1_Z, [("x", 1, -300, 300), ("x", -1, -300, 300)])
+    b.rails(T2, 0, 0, T2_Z, [("y", 1, -300, 300), ("y", -1, -300, 300)])
+    # Arena wall: a solid block all round, with an invisible barrier above it.
+    # Built in 800-unit lengths: one face may span at most 32 texture repeats.
+    outer = ARENA + WALL_T
+    for a in range(-outer, outer, 800):
+        e = min(a + 800, outer)
+        b.block(a, ARENA, e, outer, MOAT_Z, WALL, "arena_wall")
+        b.block(a, -outer, e, -ARENA, MOAT_Z, WALL, "arena_wall")
+    for a in range(-ARENA, ARENA, 800):
+        e = min(a + 800, ARENA)
+        b.block(ARENA, a, outer, e, MOAT_Z, WALL, "arena_wall")
+        b.block(-outer, a, -ARENA, e, MOAT_Z, WALL, "arena_wall")
+    b.box_sides(ARENA, ARENA, 0, 0, WALL, WALL + 1200, "barrier", facing_out=False)
+    # Outside: the lava moat, then low volcanic hills.
+    b.ring(MOAT_IN, MOAT_OUT, MOAT_Z, MOAT_Z, "lava")
+    b.ring(MOAT_OUT, HILLS_OUT, MOAT_Z, HILLS_Z, "hills")
+    return b
 
 
-def band_of(centre, normal):
-    x, y, z = centre
-    edge = max(abs(x), abs(y))
-    if edge > ARENA + 5:
-        return "cliff" if z > MOAT_Z + 5 or abs(normal.z) < 0.9 else "lava"
-    if abs(normal.z) < 0.5:
-        if edge > ARENA - 5:
-            if z > WALL + 5:
-                return "barrier"
-            return "arena_wall" if normal.dot(Vector((-x, -y, 0))) > 0 else "cliff"
-        return "temple_wall"
-    for x0, x1, y_low, y_high, z_low, z_high, _landing in RAMPS:
-        lo, hi = sorted((y_low, y_high))
-        if min(x0, x1) - 1 <= x <= max(x0, x1) + 1 and lo - 1 <= y <= hi + 1 and z > z_low + 1:
-            return "ramp"
-    if z > T2_Z - 5:
-        return "summit" if abs(x) < CELL and abs(y) < CELL else "tier"
-    if z > T1_Z - 5:
-        return "tier"
-    cell = (int(math.floor(x / CELL)), int(math.floor(y / CELL)))
-    if (cell[0] - cell[1]) % 5 == 0:
-        return "tracks"
-    if (cell[0] * 3 + cell[1] * 7) % 11 == 0:
-        return "bones"
-    return "floor"
+def match_bands(builder, arena):
+    """Give each converted triangle the band of the source face it came from."""
+    tree = KDTree(len(builder.bands))
+    for i, (centre, _normal, _band) in enumerate(builder.bands):
+        tree.insert(centre, i)
+    tree.balance()
+    world = arena.matrix_world
+    bands = {}
+    for polygon in arena.data.polygons:
+        centre = world @ polygon.center
+        normal = (world.to_3x3() @ polygon.normal).normalized()
+        best = None
+        for _co, index, _distance in tree.find_n(centre, 8):
+            _c, source_normal, band = builder.bands[index]
+            if abs(source_normal.dot(normal)) > 0.9:
+                best = band
+                break
+        bands.setdefault(best or "floor", []).append(polygon.index)
+    return bands
 
 
 # ---- Objects -----------------------------------------------------------------
 
-# AI nodes: id -> (x, y, z, elevation band, tag, neighbours). Links are listed
-# both ways. The tag is the node's role for the battle AI (racer.c,
-# racer_ai_challenge; objects.c, func_8001CD28), as Icicle Pyramid uses them:
-#   1  a weapon balloon sits here: CPU racers path to these to arm themselves
-#   3  a recovery point: a racer knocked onto another level heads for the
-#      nearest one on that level, so every level needs at least one
-#   0  an ordinary waypoint
 BALLOON_NODE, RECOVERY_NODE, WAYPOINT = 1, 3, 0
+R = 2900          # floor ring radius for the node graph
+MESA_FOOT = MESA_AT - MESA - 1050
+
+# AI nodes: id -> (x, y, z, elevation band, tag, neighbours). Links both ways.
+# Elevation: 0 floor, 1 tier 1 and mesa tops (both at 300), 2 summit.
+# Tags (racer.c racer_ai_challenge; objects.c func_8001CD28):
+#   1 a weapon balloon sits here - CPU racers path to these to arm themselves
+#   3 a recovery point - a racer knocked onto another level heads for the
+#     nearest one on that level, so every level needs one
+#   0 an ordinary waypoint
 AI_NODES = {
-    0: (0, 2400, 0, 0, WAYPOINT, [1, 7, 8]),        # floor N (foot of the north ramp)
-    1: (1900, 1900, 0, 0, BALLOON_NODE, [0, 2]),
-    2: (2050, 0, 0, 0, RECOVERY_NODE, [1, 3]),
-    3: (1900, -1900, 0, 0, BALLOON_NODE, [2, 4]),
-    4: (0, -2400, 0, 0, WAYPOINT, [3, 5, 11]),      # floor S (foot of the south ramp)
-    5: (-1900, -1900, 0, 0, BALLOON_NODE, [4, 6]),
-    6: (-2050, 0, 0, 0, RECOVERY_NODE, [5, 7]),
-    7: (-1900, 1900, 0, 0, BALLOON_NODE, [6, 0]),
-    8: (0, 1000, T1_Z, 1, RECOVERY_NODE, [0, 9, 13]),   # tier 1 N (top of the north ramp)
-    9: (1000, 1000, T1_Z, 1, BALLOON_NODE, [8]),        # tier 1 NE corner
-    10: (1000, -1000, T1_Z, 1, WAYPOINT, [11, 14]),     # tier 1 SE (foot of the east ramp)
-    11: (0, -1000, T1_Z, 1, RECOVERY_NODE, [4, 10, 12]),  # tier 1 S (top of the south ramp)
-    12: (-1000, -1000, T1_Z, 1, BALLOON_NODE, [11]),    # tier 1 SW corner
-    13: (-1000, 1000, T1_Z, 1, WAYPOINT, [8, 15]),      # tier 1 NW (foot of the west ramp)
-    14: (1000, 300, T2_Z, 2, WAYPOINT, [10, 16]),       # east ramp's landing
-    15: (-1000, -300, T2_Z, 2, WAYPOINT, [13, 17]),     # west ramp's landing
-    16: (500, 300, T2_Z, 2, WAYPOINT, [14, 18, 19]),
-    17: (-500, -300, T2_Z, 2, WAYPOINT, [15, 18, 20]),
-    18: (0, 0, T2_Z, 2, RECOVERY_NODE, [16, 17, 19, 20]),   # summit
-    19: (0, 500, T2_Z, 2, BALLOON_NODE, [16, 18]),
-    20: (0, -500, T2_Z, 2, BALLOON_NODE, [17, 18]),
+    # Floor ring (anticlockwise from east), passing the ramp feet.
+    0: (3500, 0, 0, 0, WAYPOINT, [1, 11, 12]),           # foot of the east ramp
+    1: (R, 1500, 0, 0, RECOVERY_NODE, [0, 2]),
+    2: (2400, 2400, 0, 0, WAYPOINT, [1, 3, 20]),          # by the NE mesa's ramp
+    3: (0, R, 0, 0, BALLOON_NODE, [2, 4]),
+    4: (-2400, 2400, 0, 0, WAYPOINT, [3, 5, 21]),         # by the NW mesa's ramp
+    5: (-R, 1500, 0, 0, WAYPOINT, [4, 6]),
+    6: (-3500, 0, 0, 0, WAYPOINT, [5, 7, 13]),            # foot of the west ramp
+    7: (-R, -1500, 0, 0, RECOVERY_NODE, [6, 8]),
+    8: (-2400, -2400, 0, 0, WAYPOINT, [7, 9, 22]),        # by the SW mesa's ramp
+    9: (0, -R, 0, 0, BALLOON_NODE, [8, 10]),
+    10: (2400, -2400, 0, 0, WAYPOINT, [9, 11, 23]),       # by the SE mesa's ramp
+    11: (R, -1500, 0, 0, WAYPOINT, [10, 0]),
+    # Tier 1.
+    12: (1600, 0, T1_Z, 1, RECOVERY_NODE, [0, 14, 15]),   # top of the east ramp
+    13: (-1600, 0, T1_Z, 1, RECOVERY_NODE, [6, 16, 17]),  # top of the west ramp
+    14: (1600, 1600, T1_Z, 1, BALLOON_NODE, [12, 18]),
+    15: (1600, -1600, T1_Z, 1, BALLOON_NODE, [12, 19]),
+    16: (-1600, 1600, T1_Z, 1, BALLOON_NODE, [13, 18]),
+    17: (-1600, -1600, T1_Z, 1, BALLOON_NODE, [13, 19]),
+    18: (0, 1880, T1_Z, 1, WAYPOINT, [14, 16, 24]),       # foot of the north summit ramp
+    19: (0, -1880, T1_Z, 1, WAYPOINT, [15, 17, 25]),      # foot of the south summit ramp
+    # Mesa ramp feet on the floor, then the mesa tops.
+    20: (MESA_AT, MESA_FOOT, 0, 0, WAYPOINT, [2, 26]),
+    21: (-MESA_AT, MESA_FOOT, 0, 0, WAYPOINT, [4, 27]),
+    22: (-MESA_AT, -MESA_FOOT, 0, 0, WAYPOINT, [8, 28]),
+    23: (MESA_AT, -MESA_FOOT, 0, 0, WAYPOINT, [10, 29]),
+    24: (0, 500, T2_Z, 2, WAYPOINT, [18, 30]),
+    25: (0, -500, T2_Z, 2, WAYPOINT, [19, 30]),
+    26: (MESA_AT, MESA_AT, MESA_Z, 1, BALLOON_NODE, [20]),
+    27: (-MESA_AT, MESA_AT, MESA_Z, 1, BALLOON_NODE, [21]),
+    28: (-MESA_AT, -MESA_AT, MESA_Z, 1, BALLOON_NODE, [22]),
+    29: (MESA_AT, -MESA_AT, MESA_Z, 1, BALLOON_NODE, [23]),
+    # Summit.
+    30: (0, 0, T2_Z, 2, RECOVERY_NODE, [24, 25, 31, 32]),
+    31: (450, 0, T2_Z, 2, BALLOON_NODE, [30]),
+    32: (-450, 0, T2_Z, 2, BALLOON_NODE, [30]),
 }
-
-# Every balloon node gets a balloon on it; these are extras with no node.
-BALLOON_TYPES = {1: "MISSILE", 3: "MISSILE", 5: "MISSILE", 7: "MISSILE",
-                 9: "MISSILE", 12: "MISSILE", 19: "MISSILE", 20: "SHIELD"}
-EXTRA_BALLOONS = [  # (x, y, z, type)
-    (2300, 0, 0, "TRAP"), (-2300, 0, 0, "TRAP"), (1600, 1200, 0, "MISSILE"),
-    (-1600, -1200, 0, "MISSILE"), (0, 1000, T1_Z, "SHIELD"), (0, 0, T2_Z, "MAGNET"),
-]
-
-STARTS = [(2200, 1500), (-2200, -1500), (1500, -2200), (-1500, 2200)]
+BALLOON_TYPES = {3: "MISSILE", 9: "MISSILE", 14: "MISSILE", 15: "TRAP", 16: "TRAP", 17: "MISSILE",
+                 26: "MISSILE", 27: "SHIELD", 28: "MISSILE", 29: "SHIELD", 31: "MISSILE", 32: "MAGNET"}
+EXTRA_BALLOONS = [(3700, 2400, 0, "MISSILE"), (-3700, -2400, 0, "MISSILE"),
+                  (-3700, 2400, 0, "TRAP"), (3700, -2400, 0, "TRAP")]
+STARTS = [(3700, 1200), (-3700, -1200), (1200, -3700), (-1200, 3700)]
 
 
 def main():
@@ -310,7 +424,8 @@ def main():
     work = tempfile.mkdtemp(prefix="dkr-arena-")
     bpy.ops.wm.save_as_mainfile(filepath=os.path.join(work, "fossil-pyramid.blend"))
 
-    source = build_arena()
+    builder = build_arena()
+    source = builder.finish()
     bpy.context.view_layer.objects.active = source
     source.select_set(True)
     if bpy.ops.dkr.track_from_mesh_blank(keep_source=False, keep_textures=False) != {"FINISHED"}:
@@ -318,12 +433,7 @@ def main():
     arena = geometry_ops.geometry_objects(bpy.context)[0]
     bpy.context.view_layer.objects.active = arena
 
-    bands = {}
-    world = arena.matrix_world
-    for polygon in arena.data.polygons:
-        centre = world @ polygon.center
-        normal = (world.to_3x3() @ polygon.normal).normalized()
-        bands.setdefault(band_of(centre, normal), []).append(polygon.index)
+    bands = match_bands(builder, arena)
     for band, faces in sorted(bands.items()):
         if band == "barrier":
             continue
@@ -338,7 +448,6 @@ def main():
             raise SystemExit("apply_texture failed for %s" % band)
     print("fossil_pyramid: faces " + ", ".join("%s=%d" % (k, len(v)) for k, v in sorted(bands.items())))
 
-    # Header: a battle, cars only, Fire Mountain's sky and the battle theme.
     scene.dkr.level_type = "CHALLENGE"
     scene.dkr.challenge_type = "BATTLE"
     scene.dkr.vehicles = {"VEHICLE_CAR"}
@@ -360,15 +469,14 @@ def main():
             obj[key] = value
         return obj
 
-    def face_centre(x, y):
-        return math.atan2(x, -y)  # yaw 0 faces +Y; this turns a racer at (x, y) to the origin
-
     for index, (x, y) in enumerate(STARTS):
-        place("ASSET_OBJECT_SETUPPOINT", x, y, 20, "structure", face_centre(x, y),
+        # yaw 0 faces +Y; this turns a racer at (x, y) towards the middle.
+        place("ASSET_OBJECT_SETUPPOINT", x, y, 20, "structure", math.atan2(x, -y),
               racerIndex=index, entranceID=0)
     for node, (x, y, z, elevation, tag, neighbours) in AI_NODES.items():
         for other in neighbours:
             assert node in AI_NODES[other][5], "AI link %d->%d is one-way" % (node, other)
+        assert len(neighbours) <= 4, node
         assert (tag == BALLOON_NODE) == (node in BALLOON_TYPES), "balloon node %d" % node
         place("ASSET_OBJECT_AINODE", x, y, z + 10, "collectables", nodeID=node, unk8=tag,
               adjacent=(neighbours + [255, 255, 255, 255])[:4], elevation=elevation)
@@ -377,19 +485,19 @@ def main():
     balloons = [(AI_NODES[n][0], AI_NODES[n][1], AI_NODES[n][2], kind) for n, kind in BALLOON_TYPES.items()]
     for x, y, z, kind in balloons + EXTRA_BALLOONS:
         # Retail balloons float about 16 units up: low enough to drive through.
-        place("ASSET_OBJECT_WEAPONBALLOON", x, y, z + 16, "collectables",
-              balloonType="BALLOON_TYPE_" + kind)
+        place("ASSET_OBJECT_WEAPONBALLOON", x, y, z + 16, "collectables", balloonType="BALLOON_TYPE_" + kind)
     for sx in (1, -1):
         for sy in (1, -1):
-            place("ASSET_OBJECT_BEACHTREE", sx * 2500, sy * 2500, 0, "structure",
-                  modelIndex=0, radius=82, solid=32)
-            place("ASSET_OBJECT_FLAMINGTORCH", sx * (T2 - 60), sy * (T2 - 60), T2_Z, "structure",
+            place("ASSET_OBJECT_BEACHTREE", sx * 4000, sy * 4000, 0, "structure", modelIndex=0, radius=82, solid=32)
+            place("ASSET_OBJECT_BEACHTREE", sx * 4000, sy * 2000, 0, "structure", modelIndex=0, radius=82, solid=32)
+            place("ASSET_OBJECT_PALMPLANT", sx * 2000, sy * 4000, 0, "structure", modelIndex=0, radius=40, solid=1)
+            place("ASSET_OBJECT_BLUEBERRYBUSH", sx * 1000, sy * 4100, 0, "structure", modelIndex=0, radius=34, solid=1)
+            place("ASSET_OBJECT_FLAMINGTORCH", sx * (T2 - 120), sy * (T2 - 120), T2_Z, "structure",
                   animSpeed=7, radius=255)
-            place("ASSET_OBJECT_FLAMINGTORCH", sx * (T1 - 60), sy * (T1 - 60), T1_Z, "structure",
+            place("ASSET_OBJECT_FLAMINGTORCH", sx * (T1 - 120), sy * (T1 - 120), T1_Z, "structure",
                   animSpeed=7, radius=255)
-            for along in (-1300, 1300):
-                place("ASSET_OBJECT_BLUEBERRYBUSH", sx * 2600, along, 0, "structure",
-                      modelIndex=0, radius=34, solid=1)
+            place("ASSET_OBJECT_FLAMINGTORCH", sx * (MESA_AT + MESA - 120), sy * (MESA_AT + MESA - 120),
+                  MESA_Z, "structure", animSpeed=7, radius=255)
 
     if args.keep_blend:
         bpy.ops.wm.save_as_mainfile(filepath=os.path.abspath(args.keep_blend))
@@ -400,8 +508,7 @@ def main():
     if result != {"FINISHED"}:
         raise SystemExit(1)
     # Track Lab has no field for the battle AI percentages; set them in place.
-    header_path = os.path.join(out, "fossil-pyramid.dkrmap", "header.bin")
-    with open(header_path, "r+b") as handle:
+    with open(os.path.join(out, "fossil-pyramid.dkrmap", "header.bin"), "r+b") as handle:
         handle.seek(0x2A)
         handle.write(bytes(AI_PERCENTAGES))
 

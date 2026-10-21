@@ -4,26 +4,30 @@
         --track-lab ~/src/DKR-R/tools/blender --assets ~/dkr-assets \
         --layout tools/custom_tracks/layouts/canyon-loop.json --out custom-tracks
 
+The land is a heightfield: every terrain vertex takes its height from its
+distance to the road, so the road runs along a valley floor with wide grass
+run-off, rolling hills beyond and rocky cliffs at the edge of the world.
+Because the height comes from the distance to the NEAREST part of the road,
+infields between two stretches of road stay clean where offset strips would
+fold over themselves. The road is a separate ribbon laid just above the
+terrain, so its edges are crisp.
+
 The layout file is JSON:
 
     {
-      "name": "Canyon Loop", "id": "canyon-loop", "laps": 3,
-      "scale": 0.55,                       # multiplies every control point's x/y
-      "points": [[x, y, z], ...],          # closed loop, Blender axes (z up), map units
-      "road": 600, "verge": 220, "wall": 320, "apron": 1400,
-      "textures": {"road": 749, "verge": 65, "wall": 29, "apron": 65},
-      "music": 31, "skybox": "ASSET_OBJECT_DOME13",
-      "checkpoints": 20, "zippers": [0.12, 0.62],
-      "balloons": [[0.25, "BALLOON_TYPE_BOOST"], [0.55, "BALLOON_TYPE_MISSILE"]],
-      "bananas": [0.08, 0.35, 0.7]
+      "name": "Canyon Loop", "id": "canyon-loop", "laps": 3, "scale": 0.5,
+      "points": [[x, y, z], ...],      # closed loop, Blender axes (z up), map units
+      "road": 1000, "runoff": 450,     # road width; flat grass each side of it
+      "hills": 420, "cliff": 900,      # rolling hills, then the cliff at the edge
+      "crests": [[0.84, 200, 900]],    # jump crests: [lap fraction, height, length]
+      "textures": {...}, "music": 31, "skybox": "ASSET_OBJECT_DOME13",
+      "checkpoints": 28, "zippers": [...], "balloons": [[fraction, type], ...],
+      "bananas": [...], "scenery": 1300   # spacing of trees/bushes along the run-off
     }
 
-Positions along the lap ("zippers", "balloons", "bananas") are fractions of the
-lap from the start line. The geometry is original: a road strip with grass
-verges, walls and decorative canyon slopes, textured with RETAIL textures by
-id, so the package ships no ROM bytes of its own. Track Lab does the level
-model layout (segments, BSP, visibility, collision) and the object-map and
-header encoding.
+Lap positions are fractions of the lap from the start line. Geometry is
+original and textured with RETAIL textures by id, so the package ships no ROM
+bytes; Track Lab does the model layout and the object-map/header encoding.
 """
 import argparse
 import json
@@ -36,6 +40,15 @@ import bmesh
 import bpy
 from mathutils import Vector
 from mathutils.kdtree import KDTree
+
+DEFAULTS = {
+    "laps": 3, "scale": 1.0, "road": 1000, "runoff": 450, "hills": 420, "cliff": 900,
+    "crests": [], "cell": 400, "margin": 2600,
+    "textures": {"road": 816, "runoff": 65, "hill": 65, "slope": 167, "cliff": 35},
+    "music": 31, "skybox": "ASSET_OBJECT_DOME13", "checkpoints": 28,
+    "zippers": [], "balloons": [], "bananas": [], "scenery": 1300,
+}
+SURFACES = {"road": "0", "runoff": "1", "hill": "1", "slope": "4", "cliff": "4"}
 
 
 def arguments():
@@ -50,9 +63,14 @@ def arguments():
     return parser.parse_args(argv)
 
 
+def smoothstep(edge0, edge1, x):
+    t = min(1.0, max(0.0, (x - edge0) / (edge1 - edge0)))
+    return t * t * (3 - 2 * t)
+
+
 # ---- Centreline --------------------------------------------------------------
 
-def catmull_rom_closed(points, per_span=24):
+def catmull_rom_closed(points, per_span=32):
     out = []
     n = len(points)
     for i in range(n):
@@ -66,12 +84,11 @@ def catmull_rom_closed(points, per_span=24):
 
 
 def resample_closed(points, spacing):
-    """Even arc-length samples around a closed polyline."""
     lengths = [0.0]
     for i in range(len(points)):
         lengths.append(lengths[-1] + (points[(i + 1) % len(points)] - points[i]).length)
     total = lengths[-1]
-    count = max(16, int(round(total / spacing)))
+    count = max(32, int(round(total / spacing)))
     samples, j = [], 0
     for k in range(count):
         target = total * k / count
@@ -93,15 +110,29 @@ class Centreline:
             t = self.p[(i + 1) % self.n] - self.p[i - 1]
             t.z = 0.0
             self.tangent.append(t.normalized())
+        self.tree = KDTree(self.n)
+        for i, p in enumerate(self.p):
+            self.tree.insert(Vector((p.x, p.y, 0.0)), i)
+        self.tree.balance()
 
     def index_at(self, fraction):
         return int(round((fraction % 1.0) * self.n)) % self.n
 
-    def frame(self, fraction, lateral=0.0, up=0.0):
+    def frame(self, fraction, lateral=0.0):
         i = self.index_at(fraction)
         t = self.tangent[i]
-        side = Vector((t.y, -t.x, 0.0))  # right-hand side when facing along t
-        return self.p[i] + side * lateral + Vector((0, 0, up)), t
+        side = Vector((t.y, -t.x, 0.0))
+        return self.p[i] + side * lateral, t
+
+    def nearest(self, x, y):
+        _, i, d = self.tree.find(Vector((x, y, 0.0)))
+        return i, d
+
+    def curvature_radius(self, i):
+        a, b, c = self.p[i - 1].xy, self.p[i].xy, self.p[(i + 1) % self.n].xy
+        ab, bc, ca = (b - a).length, (c - b).length, (a - c).length
+        area2 = abs((b - a).x * (c - a).y - (b - a).y * (c - a).x)
+        return float("inf") if area2 < 1e-6 else ab * bc * ca / (2 * area2)
 
     @staticmethod
     def yaw(t):
@@ -109,79 +140,155 @@ class Centreline:
         return math.atan2(-t.x, t.y)
 
 
-def check_clearance(line, half_width):
-    """Refuse layouts whose corridor would overlap itself."""
-    tree = KDTree(line.n)
+def ease_tight_curves(samples, minimum, spacing):
+    """Locally smooth the spline wherever its radius is below `minimum`, then
+    resample it evenly. Smoothing only widens a bend, so hand-tuning control
+    points to fit a wide road becomes unnecessary for all but extreme layouts."""
+    def radius(points, i):
+        a, b, c = points[i - 1].xy, points[i].xy, points[(i + 1) % len(points)].xy
+        area2 = abs((b - a).x * (c - a).y - (b - a).y * (c - a).x)
+        return float("inf") if area2 < 1e-6 else (b - a).length * (c - b).length * (a - c).length / (2 * area2)
+
+    points = [p.copy() for p in samples]
+    n = len(points)
+    for _ in range(400):
+        tight = [i for i in range(n) if radius(points, i) < minimum]
+        if not tight:
+            break
+        moved = set()
+        for i in tight:
+            for k in range(-3, 4):
+                moved.add((i + k) % n)
+        smoothed = [p.copy() for p in points]
+        for i in moved:
+            mid = (points[i - 1] + points[(i + 1) % n]) / 2
+            smoothed[i] = points[i].lerp(mid, 0.5)
+        points = smoothed
+    return resample_closed(points, spacing)
+
+
+def apply_crests(line, crests):
+    """Raise the road into jump crests: a long climb and a short drop."""
+    for fraction, height, length in crests:
+        centre = line.index_at(fraction)
+        span = max(2, int(length / (line.total / line.n)))
+        for k in range(-span, span // 3 + 1):
+            i = (centre + k) % line.n
+            if k <= 0:
+                lift = height * (1 - (k / span) ** 2)
+            else:
+                lift = height * (1 - k / (span / 3))
+            line.p[i] = line.p[i] + Vector((0, 0, max(0.0, lift)))
+
+
+def check_layout(line, spec):
+    half = spec["road"] / 2
+    where = min(range(line.n), key=line.curvature_radius)
+    tightest = line.curvature_radius(where)
+    if tightest < half * 1.6:
+        p = line.p[where] / spec["scale"]
+        raise SystemExit("a curve is too tight for a %d-wide road (radius %.0f at %.0f%% of the lap, "
+                         "near layout point (%.0f, %.0f)); spread the points there or raise 'scale'"
+                         % (spec["road"], tightest, 100.0 * where / line.n, p.x, p.y))
+    clear = half + spec["runoff"]
+    window = int(math.ceil(3 * clear / (line.total / line.n)))
     for i, p in enumerate(line.p):
-        tree.insert(Vector((p.x, p.y, 0.0)), i)
-    tree.balance()
-    window = int(math.ceil(2.5 * half_width / (line.total / line.n)))
-    for i, p in enumerate(line.p):
-        for _, j, distance in tree.find_range(Vector((p.x, p.y, 0.0)), 2 * half_width + 100):
-            gap = min((i - j) % line.n, (j - i) % line.n)
-            if gap > window:
-                raise SystemExit("layout overlaps itself near sample %d/%d (%.0f units apart); "
-                                 "spread the points or raise 'scale'" % (i, j, distance))
+        for _, j, distance in line.tree.find_range(Vector((p.x, p.y, 0.0)), 2 * clear + 200):
+            if min((i - j) % line.n, (j - i) % line.n) > window:
+                raise SystemExit("two stretches of road come within %.0f units near samples %d/%d; "
+                                 "their run-off would overlap" % (distance, i, j))
+    return tightest
 
 
 # ---- Geometry ----------------------------------------------------------------
 
+def terrain_height(line, spec, x, y):
+    i, d = line.nearest(x, y)
+    # The lowest road height within about a grid cell of here, less a margin:
+    # terrain is interpolated straight across each 400-unit cell, so taking
+    # the minimum keeps it under the road ribbon even where the road dips.
+    reach = int(math.ceil(spec["cell"] * 1.5 / (line.total / line.n)))
+    base = min(line.p[(i + k) % line.n].z for k in range(-reach, reach + 1)) - 30.0
+    flat = spec["road"] / 2 + spec["runoff"]
+    t = d - flat
+    if t <= 0:
+        return base, d
+    roll = 0.5 + 0.5 * math.sin(x * 0.00061 + 1.3) * math.cos(y * 0.00047 + 0.4)
+    hills = spec["hills"] * smoothstep(0, 1300, t) * (0.55 + 0.45 * roll)
+    cliff = spec["cliff"] * smoothstep(1500, 1900, t)
+    return base + hills + cliff, d
+
+
+def runoff_widths(line, spec):
+    """Per sample, how far the run-off reaches on each side. On the inside of
+    a bend it is held inside the bend's radius (and eased along the road) so
+    the ribbon can never fold over itself there."""
+    full = spec["road"] / 2 + spec["runoff"]
+    left, right = [], []
+    for i in range(line.n):
+        a, b = line.tangent[i - 1], line.tangent[(i + 1) % line.n]
+        turn = a.x * b.y - a.y * b.x  # > 0 turns left, so the left side is inside
+        limit = min(full, 0.85 * line.curvature_radius(i))
+        left.append(limit if turn > 0 else full)
+        right.append(limit if turn < 0 else full)
+    def ease(values):
+        span = 6
+        return [min(values[(i + k) % line.n] for k in range(-span, span + 1)) for i in range(line.n)]
+    return ease(left), ease(right)
+
+
 def build_mesh(line, spec):
-    road, verge, wall, apron = spec["road"] / 2, spec["verge"], spec["wall"], spec["apron"]
-    edge = road + verge
-    # Cross-section, left to right: (lateral, height above road, material).
-    profile = [(-edge - apron, wall + 260), (-edge, wall), (-edge, 0.0), (-road, 0.0),
-               (-road / 2, 0.0), (0.0, 0.0), (road / 2, 0.0), (road, 0.0),
-               (edge, 0.0), (edge, wall), (edge + apron, wall + 260)]
-    kinds = ["apron", "wall", "verge", "road", "road", "road", "road", "verge", "wall", "apron"]
-    mesh = bpy.data.meshes.new("track_source")
     bm = bmesh.new()
-    rings = []
+    mesh = bpy.data.meshes.new("track_source")
+    material = bpy.data.materials.new("track")
+    mesh.materials.append(material)
+
+    # Road ribbon, five lines across: run-off edge, road edge, centre, road
+    # edge, run-off edge. The run-off is on the ribbon too, so the grass a kart
+    # runs onto is flush with the road.
+    half = spec["road"] / 2
+    left, right = runoff_widths(line, spec)
+    rows = []
     for i in range(line.n):
         t = line.tangent[i]
         side = Vector((t.y, -t.x, 0.0))
-        rings.append([bm.verts.new(line.p[i] + side * lateral + Vector((0, 0, height)))
-                      for lateral, height in profile])
-    # An invisible barrier above each visible wall, so a hop or a boost can never
-    # carry a kart over it onto the decorative slopes (which have no collision).
-    barrier = []
+        lateral = (-max(left[i], half + 40), -half, 0.0, half, max(right[i], half + 40))
+        rows.append([bm.verts.new(line.p[i] + side * l) for l in lateral])
     for i in range(line.n):
-        t = line.tangent[i]
-        side = Vector((t.y, -t.x, 0.0))
-        barrier.append([bm.verts.new(line.p[i] + side * lateral + Vector((0, 0, wall + 900)))
-                        for lateral in (-edge, edge)])
-    materials = {}
-    for name in ("road", "verge", "wall", "apron", "barrier"):
-        material = bpy.data.materials.new(name)
-        if name == "apron":
-            material["dkr_category"] = "decoration"  # drawn, never collided with
-        if name == "barrier":
-            material["dkr_category"] = "invisible walls"  # collided with, never drawn
-        mesh.materials.append(material)
-        materials[name] = len(mesh.materials) - 1
-    faces = []
-    for i in range(line.n):
-        j = (i + 1) % line.n
-        a, b = rings[i], rings[j]
-        for k, kind in enumerate(kinds):
+        a, b = rows[i], rows[(i + 1) % line.n]
+        for k in range(4):
             face = bm.faces.new((a[k], a[k + 1], b[k + 1], b[k]))
-            face.material_index = materials[kind]
-            faces.append((face, kind, i))
-        for column, k in ((0, 1), (1, 9)):  # wall tops: profile points 1 and 9
-            face = bm.faces.new((a[k], barrier[i][column], barrier[j][column], b[k]))
-            face.material_index = materials["barrier"]
-            faces.append((face, "barrier", i))
-    bm.normal_update()
-    # Collision is one-sided: floors must face up and walls must face the road,
-    # or a kart drives straight through the wall from the road side.
-    for face, kind, i in faces:
-        if kind in ("road", "verge"):
+            face.normal_update()
             if face.normal.z < 0:
                 face.normal_flip()
-        elif kind in ("wall", "barrier"):
-            toward = line.p[i] - face.calc_center_median()
-            toward.z = 0.0
-            if face.normal.dot(toward) < 0:
+
+    # Terrain: a grid over the track's surroundings, cells beyond reach dropped.
+    xs = [p.x for p in line.p]
+    ys = [p.y for p in line.p]
+    cell, margin = spec["cell"], spec["margin"]
+    x0 = math.floor((min(xs) - margin) / cell) * cell
+    y0 = math.floor((min(ys) - margin) / cell) * cell
+    nx = int(math.ceil((max(xs) + margin - x0) / cell))
+    ny = int(math.ceil((max(ys) + margin - y0) / cell))
+    grid = {}
+    for gx in range(nx + 1):
+        for gy in range(ny + 1):
+            x, y = x0 + gx * cell, y0 + gy * cell
+            z, d = terrain_height(line, spec, x, y)
+            grid[gx, gy] = (Vector((x, y, z)), d)
+    verts = {}
+
+    def vert(key):
+        if key not in verts:
+            verts[key] = bm.verts.new(grid[key][0])
+        return verts[key]
+
+    for gx in range(nx):
+        for gy in range(ny):
+            keys = [(gx, gy), (gx + 1, gy), (gx + 1, gy + 1), (gx, gy + 1)]
+            face = bm.faces.new([vert(k) for k in keys])
+            face.normal_update()
+            if face.normal.z < 0:
                 face.normal_flip()
     bm.to_mesh(mesh)
     bm.free()
@@ -191,17 +298,17 @@ def build_mesh(line, spec):
 
 
 def classify(line, spec, polygon, world):
-    """Which band a converted face belongs to, from where it sits."""
     centre = world @ polygon.center
     normal = (world.to_3x3() @ polygon.normal).normalized()
-    nearest = min(range(line.n), key=lambda i: (line.p[i].xy - centre.xy).length_squared)
-    lateral = (line.p[nearest].xy - centre.xy).length
-    if lateral > spec["road"] / 2 + spec["verge"] + 1:
-        return "apron"
-    if abs(normal.z) < 0.5:
-        # Above the visible wall top is the invisible barrier: leave it untextured.
-        return "barrier" if centre.z > line.p[nearest].z + spec["wall"] + 20 else "wall"
-    return "road" if lateral <= spec["road"] / 2 + 1 else "verge"
+    i, d = line.nearest(centre.x, centre.y)
+    on_ribbon = centre.z > line.p[i].z - 12  # the terrain under it is 30+ lower
+    if on_ribbon and d < spec["road"] / 2:
+        return "road"
+    if on_ribbon and d < spec["road"] / 2 + spec["runoff"] + 5:
+        return "runoff"
+    if normal.z > 0.8:
+        return "hill"
+    return "slope" if normal.z > 0.55 else "cliff"
 
 
 # ---- Main --------------------------------------------------------------------
@@ -210,11 +317,7 @@ def main():
     args = arguments()
     with open(args.layout, encoding="utf-8") as handle:
         spec = json.load(handle)
-    defaults = {"laps": 3, "scale": 1.0, "road": 600, "verge": 220, "wall": 320, "apron": 1400,
-                "textures": {"road": 749, "verge": 65, "wall": 29, "apron": 65},
-                "music": 31, "skybox": "ASSET_OBJECT_DOME13", "checkpoints": 20,
-                "zippers": [], "balloons": [], "bananas": []}
-    for key, value in defaults.items():
+    for key, value in DEFAULTS.items():
         spec.setdefault(key, value)
 
     sys.path.insert(0, os.path.abspath(os.path.expanduser(args.track_lab)))
@@ -233,41 +336,36 @@ def main():
     bpy.ops.wm.save_as_mainfile(filepath=os.path.join(work, spec["id"] + ".blend"))
 
     control = [Vector((x * spec["scale"], y * spec["scale"], z)) for x, y, z in spec["points"]]
-    samples, total = resample_closed(catmull_rom_closed(control), 110.0)
+    samples, total = resample_closed(catmull_rom_closed(control), 140.0)
+    samples, total = ease_tight_curves(samples, spec["road"] / 2 * 1.7, 140.0)
     line = Centreline(samples, total)
-    half = spec["road"] / 2 + spec["verge"]
-    check_clearance(line, half)
-    print("make_track: lap length %.0f units, %d samples" % (total, line.n))
+    apply_crests(line, spec["crests"])
+    tightest = check_layout(line, spec)
+    print("make_track: lap %.0f units, %d samples, tightest curve radius %.0f" % (total, line.n, tightest))
 
-    # Geometry -> Track Lab level model (segments, BSP, collision).
     source = build_mesh(line, spec)
     bpy.context.view_layer.objects.active = source
     source.select_set(True)
-    result = bpy.ops.dkr.track_from_mesh_blank(keep_source=False, keep_textures=False)
-    if result != {"FINISHED"}:
-        raise SystemExit("track_from_mesh_blank failed: %s" % result)
+    if bpy.ops.dkr.track_from_mesh_blank(keep_source=False, keep_textures=False) != {"FINISHED"}:
+        raise SystemExit("track_from_mesh_blank failed")
     track = geometry_ops.geometry_objects(bpy.context)[0]
     bpy.context.view_layer.objects.active = track
 
-    surfaces = {"road": "0", "verge": "1", "wall": "0", "apron": "1"}
     bands = {}
     for polygon in track.data.polygons:
         bands.setdefault(classify(line, spec, polygon, track.matrix_world), []).append(polygon.index)
-    for band, faces in bands.items():
-        if band == "barrier":
-            continue
+    for band, faces in sorted(bands.items()):
         wanted = set(faces)
         for polygon in track.data.polygons:
             polygon.select = polygon.index in wanted
         scene.dkr.texture_id = int(spec["textures"][band])
-        scene.dkr.texture_surface = surfaces[band]
+        scene.dkr.texture_surface = SURFACES[band]
         scene.dkr.texture_mapping = "PROJECT"
-        scene.dkr.texture_scale = 256.0
+        scene.dkr.texture_scale = 320.0
         if bpy.ops.dkr.apply_texture() != {"FINISHED"}:
             raise SystemExit("apply_texture failed for %s" % band)
     print("make_track: faces " + ", ".join("%s=%d" % (k, len(v)) for k, v in sorted(bands.items())))
 
-    # Header.
     scene.dkr.level_type = "RACE"
     scene.dkr.laps = int(spec["laps"])
     bpy.ops.dkr.header_defaults()
@@ -276,38 +374,60 @@ def main():
     scene.dkr.track_name = spec["name"]
     scene.dkr.track_id = spec["id"]
 
-    def place(object_id, fraction, slot, lateral=0.0, up=0.0, **fields):
-        position, tangent = line.frame(fraction, lateral, up)
+    def ground(x, y):
+        return terrain_height(line, spec, x, y)[0] + 30.0
+
+    def place(object_id, position, yaw, slot, up=0.0, **fields):
         scene.dkr.slot = slot
-        scene.cursor.location = position
+        scene.cursor.location = (position.x, position.y, position.z + up)
         if bpy.ops.dkr.place_object(object_id=object_id) != {"FINISHED"}:
             raise SystemExit("place_object failed for %s" % object_id)
         obj = bpy.context.view_layer.objects.active
-        obj.rotation_euler.z = Centreline.yaw(tangent)
+        obj.rotation_euler.z = yaw
         for key, value in fields.items():
             obj[key] = value
         return obj
 
-    # Start grid just behind the line; checkpoint N-1 sits on the line itself.
-    grid_position, grid_tangent = line.frame(-250.0 / total, up=20.0)
-    scene.cursor.location = grid_position
+    grid_position, grid_tangent = line.frame(-300.0 / total)
+    scene.cursor.location = grid_position + Vector((0, 0, 20))
     scene.cursor.rotation_euler = (0.0, 0.0, Centreline.yaw(grid_tangent))
-    if bpy.ops.dkr.generate_start_grid(entrance=0, spacing=1.0, replace=True, drop=True) != {"FINISHED"}:
+    if bpy.ops.dkr.generate_start_grid(entrance=0, spacing=1.3, replace=True, drop=True) != {"FINISHED"}:
         raise SystemExit("generate_start_grid failed")
     count = int(spec["checkpoints"])
     for k in range(count):
-        place("ASSET_OBJECT_CHECKPOINT", (k + 1) / count, "structure", up=40.0,
-              index=k, scale=100)
+        position, tangent = line.frame((k + 1) / count)
+        place("ASSET_OBJECT_CHECKPOINT", position, Centreline.yaw(tangent), "structure", 40.0,
+              index=k, scale=int(min(255, spec["road"] / 6)))
     for fraction in spec["zippers"]:
-        place("ASSET_OBJECT_GROUNDZIPPER", fraction, "structure", up=4.0)
+        for lateral in (-spec["road"] * 0.22, spec["road"] * 0.22):
+            position, tangent = line.frame(fraction, lateral)
+            place("ASSET_OBJECT_GROUNDZIPPER", position, Centreline.yaw(tangent), "structure", 4.0)
     for fraction, kind in spec["balloons"]:
-        for lateral in (-spec["road"] * 0.3, 0.0, spec["road"] * 0.3):
-            place("ASSET_OBJECT_WEAPONBALLOON", fraction, "collectables", lateral, 60.0,
-                  balloonType=kind)
+        for lateral in (-0.32, -0.11, 0.11, 0.32):
+            position, tangent = line.frame(fraction, spec["road"] * lateral)
+            place("ASSET_OBJECT_WEAPONBALLOON", position, 0.0, "collectables", 16.0,
+                  balloonType="BALLOON_TYPE_" + kind)
     for fraction in spec["bananas"]:
-        for step in range(5):
-            place("ASSET_OBJECT_COIN", fraction + step * 60.0 / total, "collectables",
-                  (step - 2) * spec["road"] * 0.12, 30.0)
+        for step in range(6):
+            position, _ = line.frame(fraction + step * 80.0 / total, (step - 2.5) * spec["road"] * 0.12)
+            place("ASSET_OBJECT_COIN", position, 0.0, "collectables", 30.0)
+    # Trees and bushes just beyond the run-off, alternating sides.
+    kinds = ["ASSET_OBJECT_BEACHTREE", "ASSET_OBJECT_BLUEBERRYBUSH", "ASSET_OBJECT_PALMPLANT"]
+    fields = {"ASSET_OBJECT_BEACHTREE": {"modelIndex": 0, "radius": 82, "solid": 32},
+              "ASSET_OBJECT_BLUEBERRYBUSH": {"modelIndex": 0, "radius": 34, "solid": 1},
+              "ASSET_OBJECT_PALMPLANT": {"modelIndex": 0, "radius": 40, "solid": 1}}
+    steps = int(total / spec["scenery"])
+    for k in range(steps):
+        fraction = (k + 0.5) / steps
+        side = 1 if k % 2 else -1
+        offset = side * (spec["road"] / 2 + spec["runoff"] + 220)
+        position, _ = line.frame(fraction, offset)
+        i, d = line.nearest(position.x, position.y)
+        if d < spec["road"] / 2 + spec["runoff"]:  # another stretch of road is closer
+            continue
+        position.z = ground(position.x, position.y)
+        kind = kinds[k % len(kinds)]
+        place(kind, position, (k * 1.7) % (2 * math.pi), "structure", **fields[kind])
 
     if args.keep_blend:
         bpy.ops.wm.save_as_mainfile(filepath=os.path.abspath(args.keep_blend))

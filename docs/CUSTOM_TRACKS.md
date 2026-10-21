@@ -50,18 +50,30 @@ own textures by id. The packages they write contain no ROM bytes.
 
 - **`tools/custom_tracks/make_track.py`** builds a race track from a layout
   file such as [`layouts/canyon-loop.json`](../tools/custom_tracks/layouts/canyon-loop.json):
-  - **Track:** a closed spline of control points, turned into a road with
-    grass verges, walls, an invisible barrier above the walls, and decorative
-    slopes beyond them.
+  - **Track:** a closed spline of control points. Tight bends are smoothed
+    automatically until the road fits.
+  - **Land:** a heightfield whose height comes from the distance to the
+    nearest road, giving a valley floor, wide grass run-off, rolling hills,
+    then cliffs at the edge of the world. Infields between two stretches of
+    road stay clean because of this.
+  - **Road:** a ribbon laid on top, carrying the run-off with it. The terrain
+    under it always takes the lowest nearby road height, so it never pokes
+    through.
   - **Objects:** a start grid, a checkpoint loop that follows the road (which
-    also gives the AI its racing line), item balloons, bananas and zip pads.
-  - **Safety check:** it refuses a layout whose road would overlap itself.
+    also gives the AI its racing line), jump crests, item balloons, bananas,
+    zip pads, and trees and bushes along the run-off.
+  - **Safety check:** it refuses a layout whose run-off areas would overlap.
 - **`tools/custom_tracks/make_fossil_pyramid.py`** builds **Fossil Pyramid**,
   a Dino Domain battle arena modelled on Icicle Pyramid:
-  - **Arena:** a walled sand floor, a two-tier temple pyramid with railed
-    ramps, and a lava moat and volcano cliffs outside.
+  - **Arena:** an 8,800-unit walled sand floor, a two-tier temple pyramid,
+    four raised corner mesas, a lava moat, and low volcanic hills beyond.
+  - **Ramps:** each runs straight into the level it climbs, with solid rails.
   - **Dressing and AI:** palms, bushes, torches, weapon balloons, and an AI
     node graph tagged the way the battle AI expects.
+- **`tools/custom_tracks/render_preview.py`** renders a generated `.blend`
+  (pass `--keep-blend` to either generator) from above and from each corner,
+  so you can check edges before testing in game:
+  `blender -b <track>.blend --python tools/custom_tracks/render_preview.py -- out/name`
 
 ```bash
 blender -b --factory-startup --python tools/custom_tracks/make_track.py -- \
@@ -80,6 +92,11 @@ Lessons both scripts encode:
   Without them, CPU racers never arm themselves or never recover from a fall.
 - **Copy the battle AI percentages.** Track Lab has no field for them (header
   0x2A-0x33), so the arena script copies Icicle Pyramid's values into place.
+- **No wall behind where a ramp arrives.** If a tier's wall runs behind the
+  top of a ramp, its top edge is flush with the ramp surface and stops karts
+  dead. Leave the wall open there; the ramp's own sides close it.
+- **Split long faces.** A face may span at most 32 repeats of its texture
+  (UVs are s16 with five fractional bits), so long walls are built in pieces.
 - **Battles work from an ordinary race column.** A custom battle arena is
   listed like any track, and the game itself switches to a 4-racer battle
   because of its race type (64).
