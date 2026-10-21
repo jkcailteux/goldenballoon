@@ -573,6 +573,15 @@ typedef struct MdkrObjectMapAiInventory {
  * checkpoint validity or cross-map reference resolution. Context and entries
  * must be disjoint; same initialized game-thread contract as above. */
 int mdkr_objmap_ai_inventory_check(void *context, const void *entries, size_t size);
+/* Pre-boot MdkrTrackObjectMapCheck: the same record/behavior/minimum-size walk
+ * as mdkr_objmap_validate_bodies, resolved through an
+ * asset_object_behavior_catalog() snapshot instead of the object pools, so it
+ * is usable from pi_init. Context is an MdkrObjectMapCatalog. */
+typedef struct MdkrObjectMapCatalog {
+    const s16 *behaviors;
+    size_t count;
+} MdkrObjectMapCatalog;
+int mdkr_objmap_catalog_check(void *context, const void *entries, size_t size);
 #endif
 u8 timetrial_init_staff_ghost(s32 trackId);
 s8 set_course_finish_flags(Settings *settings);

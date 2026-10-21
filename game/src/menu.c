@@ -24,6 +24,7 @@
 #include "adventure_party/adventure_party_trace.h"
 #endif
 #include "custom_character_roster.h"
+#include "custom_track_boot.h"
 #include "fast3d/gfx_character_text.h"
 #include "modern_character_runtime.h"
 #include "modern_character_text.h"
@@ -186,6 +187,47 @@ _Static_assert(offsetof(TrackSelectIDsSplit, fflUnlocked) ==
 _Static_assert(sizeof(TrackSelectIDsTable) ==
                    TRACK_SELECT_ROWS * TRACK_SELECT_COLS * sizeof(s16),
                "the 5x6 track-select grid must be one contiguous run with no padding");
+
+/*
+ * Custom tracks (platform/custom_track_boot.c) get their own rows below the
+ * five worlds, CUSTOM_ROW_COLS to a row. Only the race columns are used:
+ * columns 4 and 5 are the trophy race and the challenge everywhere in this
+ * menu, and a custom row has neither. Every cursor position is resolved
+ * through trackmenu_slot_id(), never gTrackSelectIDs directly, so the retail
+ * grid and its gFFLUnlocked adjacency are untouched.
+ */
+#define CUSTOM_ROW_COLS 4
+static const char sCustomTracksHubName[] = "CUSTOM TRACKS";
+
+static s32 trackmenu_custom_rows(void) {
+    return (s32) ((mdkr_custom_track_count() + CUSTOM_ROW_COLS - 1) / CUSTOM_ROW_COLS);
+}
+
+static s32 trackmenu_is_custom_row(s32 y) {
+    return y >= TRACK_SELECT_ROWS;
+}
+
+static s16 trackmenu_slot_id(s32 y, s32 x) {
+    if (y < 0 || x < 0 || x >= TRACK_SELECT_COLS) return -1;
+    if (!trackmenu_is_custom_row(y)) return gTrackSelectIDs[y][x];
+    if (x >= CUSTOM_ROW_COLS) return -1;
+    const MdkrCustomTrackInfo *info =
+        mdkr_custom_track_info((size_t) ((y - TRACK_SELECT_ROWS) * CUSTOM_ROW_COLS + x));
+    return info ? (s16) info->level_id : -1;
+}
+
+/* The lowest row the cursor may reach. The locked Future Fun Land row stays
+ * unreachable; it is skipped rather than ending the grid when custom rows
+ * follow it. */
+static s32 trackmenu_last_row(void) {
+    s32 customRows = trackmenu_custom_rows();
+    if (customRows > 0) return TRACK_SELECT_ROWS - 1 + customRows;
+    return gFFLUnlocked == -1 ? 3 : 4;
+}
+
+static s32 trackmenu_row_hidden(s32 y) {
+    return y == 4 && gFFLUnlocked == -1;
+}
 #endif
 
 // A huge unfortunate issue has occurred which seems to have reordered the BSS for JP... Not sure why.
@@ -12277,7 +12319,17 @@ void menu_track_select_init(void) {
 #undef getTrackId
     }
 
+#ifdef NATIVE_PORT
+    if (gTrackSelectCursorY > trackmenu_last_row() || trackmenu_row_hidden(gTrackSelectCursorY)) {
+        gTrackSelectCursorX = 0;
+        gTrackSelectCursorY = 0;
+        gTrackSelectX = 0.0f;
+        gTrackSelectY = 0.0f;
+    }
+    gTrackIdForPreview = trackmenu_slot_id(gTrackSelectCursorY, gTrackSelectCursorX);
+#else
     gTrackIdForPreview = gTrackSelectIDs[gTrackSelectCursorY][gTrackSelectCursorX];
+#endif
     gTrackSelectRow = gTrackSelectCursorY + 1;
     if (gTrackIdForPreview == -1) {
         gTrackmenuLoadedLevel = gTrackSelectIDs[0][0];
@@ -12834,11 +12886,15 @@ void trackmenu_render_names(UNUSED s32 updateRate) {
         return;
     }
 
+#ifdef NATIVE_PORT
+    maxTrackY = trackmenu_last_row();
+#else
     if (gFFLUnlocked == -1) {
         maxTrackY = 3;
     } else {
         maxTrackY = 4;
     }
+#endif
     trackSelectX = (gTrackSelectX / 320);
     trackY = (gTrackSelectY / -gTrackSelectViewportY);
     trackSelectY = trackY - 1;
@@ -12848,9 +12904,48 @@ void trackmenu_render_names(UNUSED s32 updateRate) {
         trackY = trackSelectY + i + 1;
         for (j = -1; j < 2; j++, k++) {
             trackX = trackSelectX + j;
+#ifdef NATIVE_PORT
+            if (trackY < 0 || maxTrackY < trackY || trackX < 0 || trackX >= 6 ||
+                trackmenu_row_hidden(trackY) ||
+                (trackmenu_is_custom_row(trackY) && trackX >= CUSTOM_ROW_COLS)) {
+                gTrackSelectRenderDetails[k].visible = 0;
+            } else if (trackmenu_is_custom_row(trackY)) {
+                const s16 customId = trackmenu_slot_id(trackY, trackX);
+                gTrackSelectRenderDetails[k].visible = 1;
+                gTrackSelectRenderDetails[k].hubName = (char *) sCustomTracksHubName;
+                gTrackSelectRenderDetails[k].trackName =
+                    customId != -1 ? level_name(customId) : gDefaultTrackName;
+                if (customId != -1 && (settings->courseFlagsPtr[customId] & 2)) {
+                    gTrackSelectRenderDetails[k].visible = 2;
+                }
+                gTrackSelectRenderDetails[k].xOff = ((trackX * 320) - gTrackSelectX);
+                gTrackSelectRenderDetails[k].yOff = ((-trackY * gTrackSelectViewportY) - gTrackSelectY);
+                gTrackSelectRenderDetails[k].opacity = 0xFF;
+                gTrackSelectRenderDetails[k].vp1 = (trackX == gSelectedTrackX) && (trackY == gSelectedTrackY);
+                if (gTrackSelectRenderDetails[k].vp1 && gOpacityDecayTimer < 32) {
+                    gTrackSelectRenderDetails[k].opacity = gOpacityDecayTimer * 8;
+                }
+                gTrackSelectRenderDetails[k].vp2 = 0;
+                if (gMenuDelay == 0) {
+                    gTrackSelectRenderDetails[k].vp2 |= 1; /* a world row is always above */
+                    if (trackmenu_slot_id(trackY, trackX + 1) != -1) {
+                        gTrackSelectRenderDetails[k].vp2 |= 2;
+                    }
+                    if (trackY < maxTrackY) {
+                        gTrackSelectRenderDetails[k].vp2 |= 4;
+                    }
+                    if (trackX > 0) {
+                        gTrackSelectRenderDetails[k].vp2 |= 8;
+                    }
+                }
+                gTrackSelectRenderDetails[k].border = 4;
+            } else
+#else
             if (trackY < 0 || maxTrackY < trackY || trackX < 0 || trackX >= 6) {
                 gTrackSelectRenderDetails[k].visible = 0;
-            } else {
+            } else
+#endif
+            {
                 gTrackSelectRenderDetails[k].visible = 1;
                 levelName = level_name(level_world_id(trackY + 1));
                 gTrackSelectRenderDetails[k].hubName = levelName;
@@ -12894,7 +12989,11 @@ void trackmenu_render_names(UNUSED s32 updateRate) {
                     if (trackX == 4 && trackY == 4) {
                         gTrackSelectRenderDetails[k].vp2 &= ~2;
                     }
+#ifdef NATIVE_PORT
+                    if (trackX == 5 && trackY == 3 && trackmenu_custom_rows() == 0) {
+#else
                     if (trackX == 5 && trackY == 3) {
+#endif
                         gTrackSelectRenderDetails[k].vp2 &= ~4;
                     }
                 }
@@ -13059,6 +13158,45 @@ void trackmenu_input(s32 updateRate) {
         } else {
             s32 prevValue = gTrackSelectCursorX;
             s32 prevValue2 = gTrackSelectCursorY;
+#ifdef NATIVE_PORT
+            if (trackmenu_custom_rows() > 0) {
+                s32 lastRow = trackmenu_last_row();
+                if (gMenuStickX[PLAYER_MENU] < 0 && gTrackSelectCursorX > 0) {
+                    gTrackSelectCursorX--;
+                }
+                if (gMenuStickX[PLAYER_MENU] > 0 && gTrackSelectCursorX < 5 &&
+                    (!trackmenu_is_custom_row(gTrackSelectCursorY) ||
+                     trackmenu_slot_id(gTrackSelectCursorY, gTrackSelectCursorX + 1) != -1)) {
+                    gTrackSelectCursorX++;
+                }
+                if (gTrackSelectCursorY == 4 && gTrackSelectCursorX == 5) {
+                    gTrackSelectCursorX = 4;
+                }
+                if (gMenuStickX[PLAYER_MENU] == 0) {
+                    s32 row = gTrackSelectCursorY;
+                    if (gMenuStickY[PLAYER_MENU] < 0 && row < lastRow) {
+                        row++;
+                    }
+                    if (gMenuStickY[PLAYER_MENU] > 0 && row > 0) {
+                        row--;
+                    }
+                    if (trackmenu_row_hidden(row)) {
+                        row += row > gTrackSelectCursorY ? 1 : -1;
+                    }
+                    if (row == 4 && gTrackSelectCursorX == 5) {
+                        row = gTrackSelectCursorY; /* Future Fun Land has no challenge column */
+                    }
+                    if (trackmenu_is_custom_row(row)) {
+                        if (gTrackSelectCursorX >= CUSTOM_ROW_COLS) gTrackSelectCursorX = CUSTOM_ROW_COLS - 1;
+                        while (gTrackSelectCursorX > 0 && trackmenu_slot_id(row, gTrackSelectCursorX) == -1) {
+                            gTrackSelectCursorX--;
+                        }
+                    }
+                    gTrackSelectCursorY = row;
+                }
+            } else
+#endif
+            {
             if (gMenuStickX[PLAYER_MENU] < 0 && gTrackSelectCursorX > 0) {
                 gTrackSelectCursorX--;
             }
@@ -13080,9 +13218,14 @@ void trackmenu_input(s32 updateRate) {
                     gTrackSelectCursorY = 3;
                 }
             }
+            }
             if ((prevValue != gTrackSelectCursorX) || (gTrackSelectCursorY != prevValue2)) {
                 sound_play(SOUND_MENU_PICK2, NULL);
+#ifdef NATIVE_PORT
+                gTrackIdForPreview = trackmenu_slot_id(gTrackSelectCursorY, gTrackSelectCursorX);
+#else
                 gTrackIdForPreview = gTrackSelectIDs[gTrackSelectCursorY][gTrackSelectCursorX];
+#endif
                 gTrackSelectRow = gTrackSelectCursorY + 1;
                 gTrackSelectTargetX = (gTrackSelectCursorX * 320);
                 gTrackSelectTargetY = -(gTrackSelectCursorY * gTrackSelectViewportY);

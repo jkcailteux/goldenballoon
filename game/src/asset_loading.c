@@ -27,6 +27,7 @@
 #include "custom_track_model.h"
 #include "custom_track_texture.h"
 #include "custom_track_header.h"
+#include "custom_track_boot.h"
 #include "object_layout.h"
 #include "structs.h"
 #include "platform_os.h" /* MDKR_TRACE */
@@ -301,6 +302,9 @@ void pi_init(void) {
      * MDKR_SUBENTRY_TEST_INDEX is set, so a normal run never enters it. */
     mdkr_asset_subentry_env_selftest();
     asset_custom_track_env_selftest();
+    /* Custom tracks append to the level tables, so they must be published
+     * before tex_init_textures and level_global_init take their inventories. */
+    mdkr_custom_tracks_boot();
 #endif
 }
 

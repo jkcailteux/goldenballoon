@@ -3021,6 +3021,21 @@ int mdkr_objmap_admission_check(void *context, const void *entries, size_t size)
     return mdkr_objmap_validate_bodies(entries, (s32)size);
 }
 
+int mdkr_objmap_catalog_check(void *context, const void *entries, size_t size) {
+    const MdkrObjectMapCatalog *catalog = context;
+    const u8 *bytes = entries;
+    if (!catalog || !catalog->behaviors || !catalog->count || (size && !entries)) return FALSE;
+    for (size_t offset = 0; offset < size;) {
+        MdkrLevelObjectRecordView view;
+        if (mdkr_level_object_record_parse(bytes + offset, size - offset,
+                catalog->count, &view) != MDKR_LEVEL_OBJECT_RECORD_OK) return FALSE;
+        const s16 behavior = catalog->behaviors[view.object_id];
+        if (behavior < 0 || view.size < mdkr_level_object_min_size(behavior)) return FALSE;
+        offset += view.size;
+    }
+    return TRUE;
+}
+
 int mdkr_objmap_ai_inventory_check(void *context, const void *entries, size_t size) {
     _Static_assert(sizeof(((MdkrObjectMapAiInventory *)0)->explicit_ids) == AINODE_COUNT,
                    "AI admission inventory drift");

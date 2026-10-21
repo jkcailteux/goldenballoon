@@ -488,6 +488,11 @@ set(PLATFORM_SOURCES
     ${CMAKE_SOURCE_DIR}/platform/custom_track_header.c # BE header/lighting admission
     ${CMAKE_SOURCE_DIR}/platform/custom_track_model_payload.c # bounded private model repack
     ${CMAKE_SOURCE_DIR}/platform/custom_track_texture.c # bounded decoded/raw texture admission
+    ${CMAKE_SOURCE_DIR}/platform/custom_track_manifest.c # .dkrmap manifest parsing
+    ${CMAKE_SOURCE_DIR}/platform/custom_track_package.c # owned package bytes + content digest
+    ${CMAKE_SOURCE_DIR}/platform/custom_track_package_admission.c # course layout/relocation/admission
+    ${CMAKE_SOURCE_DIR}/platform/custom_track_prepared.c # prepared courses -> one session
+    ${CMAKE_SOURCE_DIR}/platform/custom_track_boot.c # discover + publish custom tracks at boot
     # The console command parser. It was reachable only from cmake/tests.cmake
     # until the console shipped -- a unit-tested island the engine never linked.
     ${CMAKE_SOURCE_DIR}/platform/dev_command.c      # console command parsing
