@@ -6,12 +6,11 @@ authored with [Track Lab](https://github.com/ThatGuyMcd/DKR-R/tree/main/tools/bl
 DKR-R's Blender add-on, which can import any retail level to remix or build a
 new one from a mesh.
 
-Status: desktop builds only. A remix of a retail track (new header and object
+Status: desktop builds, and personal web deployments (below). A remix of a retail track (new header and object
 maps, retail geometry) loads, previews in Track Select and races to the finish
 with AI, checkpoints, pickups and the authored lap count. Not yet supported:
 schema 2 packages (custom music), custom minimaps (`TEXTURES_2D` / `SPRITES`),
-saving progress or times for custom tracks between launches, and the browser
-build.
+and saving progress or times for custom tracks between launches.
 
 ## Installing a track
 
@@ -29,6 +28,20 @@ A refused package is logged and skipped; it never stops the game.
 **Never commit or publish a `.dkrmap`.** Track Lab builds it from your ROM, so
 it contains retail level data. `.gitignore` excludes `custom-tracks/` and
 `*.dkrmap/`.
+
+## Custom tracks on the web build
+
+`tools/web/deploy_vercel.sh` copies every package in `./custom-tracks` into the
+upload as `custom-tracks/<name>.dkrmap/`, along with a
+`custom-tracks/index.json` listing them. Only each manifest and the payloads it
+names are copied. Before the engine starts, the page (`installCustomTracks` in
+`dist/web/mdkr64-shell.js`) fetches the index and writes each package into the
+game's in-memory `/custom-tracks/` folder, where the same boot loader picks
+them up. Pass `--no-custom-tracks` to leave them out.
+
+**This publishes ROM-derived data at the deployment's URL.** Use it only for a
+personal deployment, ideally behind Vercel deployment protection, and never
+for a public site.
 
 ## Making a remix from the command line
 

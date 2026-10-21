@@ -1748,6 +1748,9 @@ async function boot() {
     console.warn("IDBFS mount/sync failed; running from memory only:", e);
   }
 
+  status.textContent = "Loading custom tracks…";
+  await installCustomTracks(module);
+
   const storedRomBeforeWrite = testFileInfo(ROM_PATH, false);
   const saveBeforeMain = testFileInfo("/save/eeprom.bin", true);
   const hasStoredVideoConfig = applyStoredVideoControls(qs);
@@ -2693,6 +2696,72 @@ function registerServiceWorker() {
   }
   console.error("[shell] startup failed:", error);
 });
+
+// ---- Custom tracks shipped with this deployment ----------------------------
+// A personal deploy may carry custom-tracks/: tools/web/deploy_vercel.sh copies
+// the local packages there and writes custom-tracks/index.json. Before main()
+// each package's files are written to /custom-tracks/<package>/ in the
+// in-memory file system, where platform/custom_track_boot.c finds them exactly
+// as it does on desktop. No index (the normal build) means no custom tracks.
+// Names come from our own deployment, but they become paths, so they are held
+// to plain file-name characters anyway.
+const CUSTOM_TRACK_NAME = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
+const CUSTOM_TRACK_FILES_MAX = 512;
+const CUSTOM_TRACK_BYTES_MAX = 64 * 1024 * 1024;
+let customTrackPackages = null; // fetched once per page, reused on later races
+
+async function fetchCustomTrackPackages() {
+  const response = await fetch("custom-tracks/index.json", {cache: "no-cache"});
+  if (!response.ok) return [];
+  const index = await response.json();
+  const packages = [];
+  let fileCount = 0;
+  let byteCount = 0;
+  for (const entry of Array.isArray(index?.packages) ? index.packages : []) {
+    const name = String(entry?.name || "");
+    if (!CUSTOM_TRACK_NAME.test(name) || !name.endsWith(".dkrmap")) continue;
+    const files = [];
+    for (const rel of Array.isArray(entry.files) ? entry.files : []) {
+      const parts = String(rel).split("/");
+      if (!parts.every((part) => CUSTOM_TRACK_NAME.test(part))) continue;
+      if (++fileCount > CUSTOM_TRACK_FILES_MAX) throw new Error("too many custom track files");
+      const fileResponse = await fetch("custom-tracks/" + name + "/" + parts.join("/"));
+      if (!fileResponse.ok) throw new Error(name + "/" + rel + ": HTTP " + fileResponse.status);
+      const bytes = new Uint8Array(await fileResponse.arrayBuffer());
+      byteCount += bytes.length;
+      if (byteCount > CUSTOM_TRACK_BYTES_MAX) throw new Error("custom tracks exceed 64 MiB");
+      files.push({parts, bytes});
+    }
+    if (files.length) packages.push({name, files});
+  }
+  return packages;
+}
+
+async function installCustomTracks(module) {
+  if (module.__mdkrCustomTracksInstalled) return;
+  try {
+    if (customTrackPackages === null) customTrackPackages = await fetchCustomTrackPackages();
+  } catch (error) {
+    customTrackPackages = [];
+    console.warn("[shell] custom tracks unavailable:", error);
+  }
+  const FS = module.FS;
+  const mkdir = (path) => { try { FS.mkdir(path); } catch (_) { /* exists */ } };
+  mkdir("/custom-tracks");
+  for (const pkg of customTrackPackages) {
+    const root = "/custom-tracks/" + pkg.name;
+    mkdir(root);
+    for (const file of pkg.files) {
+      let dir = root;
+      for (const part of file.parts.slice(0, -1)) { dir += "/" + part; mkdir(dir); }
+      FS.writeFile(dir + "/" + file.parts[file.parts.length - 1], file.bytes);
+    }
+  }
+  module.__mdkrCustomTracksInstalled = true;
+  if (customTrackPackages.length) {
+    console.info("[shell] custom tracks installed:", customTrackPackages.map((p) => p.name).join(", "));
+  }
+}
 
 // ---- Launcher layout: Play first --------------------------------------------
 // index.html hides Play until it is usable. While it is, #rom-ui carries
